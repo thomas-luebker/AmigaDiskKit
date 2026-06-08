@@ -4,7 +4,7 @@ A native Swift library for reading and writing Amiga disk images. Parses and cre
 
 ## Goal
 
-AmigaDiskKit was created to replace [hst-imager](https://github.com/henrikstengaard/hst-imager) as the disk-image backend for [AmigaImager](https://github.com/henrikstengaard/hst-imager](https://amiga-imager.com) . hst-imager has two known bugs that block large-disk workflows:
+AmigaDiskKit was created to replace [hst-imager](https://github.com/henrikstengaard/hst-imager) as the disk-image backend for [AmigaImager](https://amiga-imager.com) . hst-imager has two known bugs that block large-disk workflows:
 
 **Bug 1** — `rdb part format` silently writes a zero boot block for FFS partitions > 2 GiB (mitigated by upgrading those partitions to DOS\7 before format).
 
