@@ -1,0 +1,13 @@
+Disk overview:
+- Path: '/Users/loki/Desktop/build/PiStomrAmiga.img'
+- Size: 6.5 GB (7000000000 bytes)
+- Partition tables: 1
+
+Style | Part Type       | File System | # | Part Size |  Start Off |    End Off | Layout    
+------|-----------------|-------------|---|-----------|------------|------------|-----------
+MBR   | Partition Table |             |   |     512 B |          0 |        511 | =         
+      | Unallocated     |             |   |      1 MB |        512 |    1048575 | =         
+MBR   | FAT32 (LBA)     | FAT32       | 1 |      1 GB |    1048576 | 1073742335 | ==        
+MBR   | PiStorm RDB     | PiStorm RDB | 2 |    5.5 GB | 1073742336 | 6999949311 |   ========
+      | Unallocated     |             |   |   49.5 KB | 6999949312 | 6999999999 |          =
+

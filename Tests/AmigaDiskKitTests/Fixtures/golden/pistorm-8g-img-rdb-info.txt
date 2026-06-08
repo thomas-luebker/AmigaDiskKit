@@ -1,0 +1,24 @@
+Rigid Disk Block:
+Product | Vendor   | Revision |    Size | Cylinders | Heads | Sectors | Block Size | Flags | Host Id | RDB Block Lo | RDB Block Hi
+--------|----------|----------|---------|-----------|-------|---------|------------|-------|---------|--------------|-------------
+Amiga   | HstImage | 0.1      | 28.9 GB |     60066 |    16 |      63 |        512 |   7 * |       7 |            0 |         2015
+* Flags 7 = Last, LastLun, LastId
+File systems:
+# | DOS Type           | Version | Name    |    Size
+--|--------------------|---------|---------|--------
+1 | 0x50445303 (PDS\3) | 19.2    | pfs3aio | 57.7 KB
+Partitions:
+# | Name |    Size | LowCyl | HighCyl | Reserved | PreAlloc | Block Size | Buffers | DOS Type           | Mask                    | Max Transfer        | Bootable | No Mount | Priority
+--|------|---------|--------|---------|----------|----------|------------|---------|--------------------|-------------------------|---------------------|----------|----------|---------
+1 | DH0  |    2 GB |      2 |    4163 |        2 |        0 |        512 |      30 | 0x50445303 (PDS\3) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | True     | False    |        1
+2 | DH1  | 26.8 GB |   4164 |   59995 |        2 |        0 |       2048 |      30 | 0x50445303 (PDS\3) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | False    | False    |        0
+Partition table overview:
+- Path: '/Users/loki/Desktop/build/Amiga.img'
+- Size: 28.9 GB (30999822336 bytes)
+- Partition table: 'RigidDiskBlock'
+# | Type        |    Size |   Start Off |     End Off | Layout            
+--|-------------|---------|-------------|-------------|-------------------
+  | RDB         |    1 MB |           0 |     1032191 | =                 
+1 | PDS\3       |    2 GB |     1032192 |  2149023743 | =                 
+2 | PDS\3       | 26.8 GB |  2149023744 | 30963695615 |  =================
+  | Unallocated | 34.5 MB | 30963695616 | 30999822335 |                  =

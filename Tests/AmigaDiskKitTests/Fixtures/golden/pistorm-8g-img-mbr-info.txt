@@ -1,0 +1,10 @@
+Disk overview:
+- Path: '/Users/loki/Desktop/build/Amiga.img'
+- Size: 28.9 GB (31000000000 bytes)
+- Partition tables: 1
+Style | Part Type       | File System | # | Part Size |   Start Off |     End Off | Layout    
+------|-----------------|-------------|---|-----------|-------------|-------------|-----------
+RDB   | Partition Table |             |   |      1 MB |           0 |     1032191 | =         
+RDB   | PDS\3           | PDS\3       | 1 |      2 GB |     1032192 |  2149023743 | =         
+RDB   | PDS\3           | PDS\3       | 2 |   26.8 GB |  2149023744 | 30963695615 |  =========
+      | Unallocated     |             |   |   34.6 MB | 30963695616 | 30999999999 |          =

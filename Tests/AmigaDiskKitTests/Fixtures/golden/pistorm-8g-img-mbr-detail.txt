@@ -1,0 +1,20 @@
+Master Boot Record:
+Size   | Sector size | Total sectors | Cylinders | Heads per cylinder | Sectors per track
+-------|-------------|---------------|-----------|--------------------|------------------
+7.5 GB |         512 |      15625000 |       972 |                255 |                63
+Partitions:
+# | Id   | Type        | File System |   Size | Start Sec |  End Sec | Active | Primary
+--|------|-------------|-------------|--------|-----------|----------|--------|--------
+1 | 0xc  | FAT32 (LBA) | FAT32       |   1 GB |      2048 |  2097152 | Yes    | Yes    
+2 | 0x76 | PiStorm RDB | PiStorm RDB | 6.5 GB |   2097153 | 15624900 | No     | Yes    
+Partition table overview:
+- Path: '/Users/loki/Desktop/build/Amiga.img'
+- Size: 7.5 GB (8000000000 bytes)
+- Partition table: 'MasterBootRecord'
+# | Type        |    Size |  Start Off |    End Off | Layout              
+--|-------------|---------|------------|------------|---------------------
+  | MBR         |   512 B |          0 |        511 | =                   
+  | Unallocated |    1 MB |        512 |    1048575 | =                   
+1 | FAT32       |    1 GB |    1048576 | 1073742335 | ===                 
+2 | PiStorm RDB |  6.5 GB | 1073742336 | 7999949311 |    =================
+  | Unallocated | 49.5 KB | 7999949312 | 7999999999 |                    =

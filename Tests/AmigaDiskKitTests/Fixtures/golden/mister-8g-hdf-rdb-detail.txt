@@ -1,0 +1,25 @@
+Rigid Disk Block:
+Product | Vendor   | Revision |   Size | Cylinders | Heads | Sectors | Block Size | Flags | Host Id | RDB Block Lo | RDB Block Hi
+--------|----------|----------|--------|-----------|-------|---------|------------|-------|---------|--------------|-------------
+Amiga   | HstImage | 0.1      | 7.5 GB |     15500 |    16 |      63 |        512 |   7 * |       7 |            0 |         2015
+* Flags 7 = Last, LastLun, LastId
+File systems:
+# | DOS Type           | Version | Name           |    Size
+--|--------------------|---------|----------------|--------
+1 | 0x444F5303 (DOS\3) | 47.4    | FastFileSystem | 29.8 KB
+2 | 0x444F5307 (DOS\7) | 47.4    | FastFileSystem | 29.8 KB
+Partitions:
+# | Name |   Size | LowCyl | HighCyl | Reserved | PreAlloc | Block Size | Buffers | DOS Type           | Mask                    | Max Transfer        | Bootable | No Mount | Priority
+--|------|--------|--------|---------|----------|----------|------------|---------|--------------------|-------------------------|---------------------|----------|----------|---------
+1 | DH0  |   2 GB |      2 |    4163 |        2 |        0 |       2048 |      30 | 0x444F5303 (DOS\3) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | True     | False    |        1
+2 | DH1  | 5.4 GB |   4164 |   15429 |        2 |        0 |       2048 |      30 | 0x444F5307 (DOS\7) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | False    | False    |        0
+Partition table overview:
+- Path: '/Users/loki/Desktop/build/Amiga.hdf'
+- Size: 7.5 GB (7999488000 bytes)
+- Partition table: 'RigidDiskBlock'
+# | Type        |    Size |  Start Off |    End Off | Layout              
+--|-------------|---------|------------|------------|---------------------
+  | RDB         |    1 MB |          0 |    1032191 | =                   
+1 | DOS\3       |    2 GB |    1032192 | 2149023743 | =====               
+2 | DOS\7       |  5.4 GB | 2149023744 | 7963361279 |      ===============
+  | Unallocated | 34.5 MB | 7963361280 | 7999487999 |                    =

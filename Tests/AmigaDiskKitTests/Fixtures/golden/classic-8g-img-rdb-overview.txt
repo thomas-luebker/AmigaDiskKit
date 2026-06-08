@@ -1,0 +1,18 @@
+[01:52:06 INF] Hst Imager v1.5.564 (02/11/2026 16:06:56)
+[01:52:06 INF] Henrik Nørfjand Stengaard
+[01:52:06 INF] [CMD] info /Users/loki/Desktop/build/ClassicAmiga.img
+[01:52:06 INF] Reading disk information from '/Users/loki/Desktop/build/ClassicAmiga.img'
+[01:52:06 INF] Disk information read from '/Users/loki/Desktop/build/ClassicAmiga.img':
+Disk overview:
+- Path: '/Users/loki/Desktop/build/ClassicAmiga.img'
+- Size: 7.5 GB (8000000000 bytes)
+- Partition tables: 1
+
+Style | Part Type       | File System | # | Part Size |  Start Off |    End Off | Layout    
+------|-----------------|-------------|---|-----------|------------|------------|-----------
+RDB   | Partition Table |             |   |      1 MB |          0 |    1032191 | =         
+RDB   | DOS\3           | DOS\3       | 1 |      2 GB |    1032192 | 2149023743 | ===       
+RDB   | DOS\7           | DOS\7       | 2 |    5.4 GB | 2149023744 | 7963361279 |    =======
+      | Unallocated     |             |   |   34.9 MB | 7963361280 | 7999999999 |          =
+
+[01:52:06 INF] Done

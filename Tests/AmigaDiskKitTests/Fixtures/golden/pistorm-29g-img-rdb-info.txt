@@ -1,0 +1,35 @@
+
+Rigid Disk Block:
+
+Product   | Vendor   | Revision |    Size | Cylinders | Heads | Sectors | Block Size | Flags | Host Id | RDB Block Lo | RDB Block Hi
+----------|----------|----------|---------|-----------|-------|---------|------------|-------|---------|--------------|-------------
+HstImager | HstImage | 0.1      | 27.9 GB |     57985 |    16 |      63 |        512 |   7 * |       7 |            0 |         2015
+
+* Flags 7 = Last, LastLun, LastId
+
+File systems:
+
+# | DOS Type           | Version | Name           |    Size
+--|--------------------|---------|----------------|--------
+1 | 0x444F5303 (DOS\3) | 47.4    | FastFileSystem | 29.8 KB
+2 | 0x444F5307 (DOS\7) | 47.4    | FastFileSystem | 29.8 KB
+
+Partitions:
+
+# | Name |    Size | LowCyl | HighCyl | Reserved | PreAlloc | Block Size | Buffers | DOS Type           | Mask                    | Max Transfer        | Bootable | No Mount | Priority
+--|------|---------|--------|---------|----------|----------|------------|---------|--------------------|-------------------------|---------------------|----------|----------|---------
+1 | SDH0 |    2 GB |      2 |    4163 |        2 |        0 |       2048 |      30 | 0x444F5303 (DOS\3) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | True     | False    |        1
+2 | SDH1 | 25.8 GB |   4164 |   57914 |        2 |        0 |       2048 |      30 | 0x444F5307 (DOS\7) | 0x7FFFFFFE (2147483646) | 0x0001FE00 (130560) | False    | False    |        0
+
+Partition table overview:
+- Path: '/Users/loki/Desktop/build/PiStomrAmiga.img/mbr/2'
+- Size: 27.9 GB (29925826560 bytes)
+- Partition table: 'RigidDiskBlock'
+
+# | Type        |    Size |   Start Off |     End Off | Layout            
+--|-------------|---------|-------------|-------------|-------------------
+  | RDB         |    1 MB |           0 |     1032191 | =                 
+1 | DOS\3       |    2 GB |     1032192 |  2149023743 | =                 
+2 | DOS\7       | 25.8 GB |  2149023744 | 29889699839 |  =================
+  | Unallocated | 34.5 MB | 29889699840 | 29925826559 |                  =
+
