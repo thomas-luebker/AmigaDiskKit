@@ -9,9 +9,9 @@ public struct LHAMember {
     public let isDirectory: Bool
     public let originalSize: Int
     public let method: String      // e.g. "-lh5-"
-    let compressedSize: Int
-    let crc16: UInt16
-    let dataOffset: Int            // byte offset of compressed data within the archive Data
+    public let compressedSize: Int
+    public let crc16: UInt16
+    public let dataOffset: Int     // byte offset of compressed data within the archive Data
 }
 
 public struct LHAArchive {
@@ -44,6 +44,15 @@ public struct LHAArchive {
             }
             try out.write(to: dest)
         }
+    }
+
+    // MARK: - Public per-member extraction (for testing/diagnostics)
+
+    public func extractMember(_ m: LHAMember, to destURL: URL) throws {
+        if m.isDirectory { return }
+        let out = try decompressMember(m)
+        guard crc16(out) == m.crc16 else { throw LHAError.crcMismatch(path: m.path) }
+        try out.write(to: destURL)
     }
 
     // MARK: - Decompression dispatch

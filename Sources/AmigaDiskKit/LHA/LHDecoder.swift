@@ -91,33 +91,42 @@ struct LHDecoder {
 
     // MARK: - Tree reading
 
-    /// Read a Huffman tree from the bitstream.
-    /// Returns (lookupTable, effectiveTableSize).
+    /// Read the C-tree (n==nc) or P-tree (n==np).
+    /// For C-tree: T-tree is read first (before the C-tree count) per lha.c block-header format.
+    /// For P-tree: count then direct 3-bit lengths.
     private func readTree(reader: inout BitReader, n: Int, tableSize: Int, bitCount: Int) throws -> ([UInt16], Int) {
-        var nSymbols = Int(try reader.readBits(bitCount))
-        if nSymbols == 0 {
-            let single = Int(try reader.readBits(bitCount))
-            return buildSingleTable(symbol: single)
-        }
-        nSymbols = min(nSymbols, n)
-
-        var lengths = [UInt8](repeating: 0, count: n)
-        var i = 0
         if n == nc {
-            // C-tree lengths are themselves encoded with a secondary T-tree
+            // lha.c order: T-tree → C-tree count → C-tree lengths (T-tree encoded)
             let (tTree, tTS) = try readTTree(reader: &reader)
+            var nSymbols = Int(try reader.readBits(bitCount))
+            if nSymbols == 0 {
+                let single = Int(try reader.readBits(bitCount))
+                return buildSingleTable(symbol: single)
+            }
+            nSymbols = min(nSymbols, n)
+            var lengths = [UInt8](repeating: 0, count: n)
+            var i = 0
             while i < nSymbols {
                 let t = Int(try huffmanDecode(tree: tTree, tableSize: tTS, reader: &reader))
                 switch t {
-                case 0: i += 1                                              // zero-length
-                case 1: i += Int(try reader.readBits(4)) + 3               // short run
-                case 2: i += Int(try reader.readBits(9)) + 20              // long run
+                case 0: i += 1                                         // zero-length
+                case 1: i += Int(try reader.readBits(4)) + 3          // short run
+                case 2: i += Int(try reader.readBits(9)) + 20         // long run
                 default:
                     lengths[i] = UInt8(t - 2); i += 1
                 }
             }
+            return try buildTable(lengths: lengths, n: nSymbols, tableSize: tableSize)
         } else {
-            // P-tree: plain 3-bit lengths, no RLE; same extension rule as T-tree
+            // P-tree: count then plain 3-bit lengths, no RLE; same extension rule as T-tree
+            var nSymbols = Int(try reader.readBits(bitCount))
+            if nSymbols == 0 {
+                let single = Int(try reader.readBits(bitCount))
+                return buildSingleTable(symbol: single)
+            }
+            nSymbols = min(nSymbols, n)
+            var lengths = [UInt8](repeating: 0, count: n)
+            var i = 0
             while i < nSymbols {
                 let len = Int(try reader.readBits(3))
                 if len == 7 {
@@ -129,8 +138,8 @@ struct LHDecoder {
                 }
                 i += 1
             }
+            return try buildTable(lengths: lengths, n: nSymbols, tableSize: tableSize)
         }
-        return try buildTable(lengths: lengths, n: nSymbols, tableSize: tableSize)
     }
 
     /// Read the secondary T-tree (encodes the C-tree code lengths).
@@ -260,8 +269,9 @@ struct BitReader {
     private mutating func fillBuf(_ needed: Int) throws {
         while bitsLeft < needed {
             guard bytePos < data.count else {
-                bitBuf   <<= (needed - bitsLeft)
-                bitsLeft   = needed
+                // Bits below position (32 - bitsLeft) are already zero from prior <<= operations.
+                // Just extend bitsLeft; no shift needed (shifting would corrupt valid bits).
+                bitsLeft = needed
                 return
             }
             bitBuf  |= UInt32(data[bytePos]) << (24 - bitsLeft)
