@@ -72,7 +72,7 @@ public struct RigidDiskBlock {
         partitionList  = 0xFFFFFFFF
         fileSysHdrList = 0xFFFFFFFF
         badBlockList   = 0xFFFFFFFF
-        flags          = 0
+        flags          = 0x07  // RDBFF_LAST | RDBFF_LASTLUN | RDBFF_LASTTARGET
         hostId         = 0x07
         diskVendor     = vendor
         diskProduct    = product
@@ -100,17 +100,29 @@ public struct RigidDiskBlock {
         block.writeBE32(badBlockList,       at: 0x18)
         block.writeBE32(partitionListLBA,   at: 0x1C)
         block.writeBE32(fileSysHdrListLBA,  at: 0x20)
-        // 0x24–0x3F: reserved (zero)
+        // 0x24: driveInit — must be 0xFFFFFFFF (no init code); 0 causes the ROM to execute
+        // the RDSK block itself as a device init segment, corrupting the boot process.
+        block.writeBE32(UInt32.max, at: 0x24)
+        // 0x28–0x3C: reserved — spec requires 0xFFFFFFFF, not 0; these are used as
+        // list terminators and a 0 value would be interpreted as a valid block pointer.
+        for i in 0 ..< 6 {
+            block.writeBE32(UInt32.max, at: 0x28 + i * 4)
+        }
         block.writeBE32(cylinders,  at: 0x40)
         block.writeBE32(sectors,    at: 0x44)
         block.writeBE32(heads,      at: 0x48)
         block.writeBE32(interleave, at: 0x4C)
-        // 0x50–0x7F: reserved (zero)
+        block.writeBE32(hiCylinder, at: 0x50)  // park = landing-zone cylinder
         block.writeBE32(rdbBlockLo, at: 0x80)
         block.writeBE32(rdbBlockHi, at: 0x84)
         block.writeBE32(loCylinder, at: 0x88)
         block.writeBE32(hiCylinder, at: 0x8C)
-        // 0x90–0x9F: parkingZone / writePreComp / reducedWrite / stepRate (zero)
+        // rdb_CylBlocks: blocks per cylinder = heads × sectors.
+        // The Amiga ROM uses this to compute partition start LBAs:
+        //   boot_lba = partition.lowCyl × rdb_CylBlocks
+        // A value of 0 makes every partition appear to start at LBA 0 (the RDSK block),
+        // causing "Not a DOS disk" because the RDSK magic is not a valid FFS DosType.
+        block.writeBE32(heads * sectors, at: 0x90)
         block.writeAmigaString(diskVendor,   at: 0xA0, length: 8)
         block.writeAmigaString(diskProduct,  at: 0xA8, length: 16)
         block.writeAmigaString(diskRevision, at: 0xB8, length: 4)
