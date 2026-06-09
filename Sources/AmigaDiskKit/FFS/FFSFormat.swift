@@ -293,6 +293,16 @@ public enum FFSFormatter {
         block.writeBE32(mins,  at: (blockLongs - 9)  * 4)
         block.writeBE32(ticks, at: (blockLongs - 8)  * 4)
 
+        // c_days/c_mins/c_ticks at long[blockLongs-7..-5] (disk creation date).
+        // Set equal to modification date — hst-imager convention for fresh format.
+        block.writeBE32(days,  at: (blockLongs - 7) * 4)
+        block.writeBE32(mins,  at: (blockLongs - 6) * 4)
+        block.writeBE32(ticks, at: (blockLongs - 5) * 4)
+
+        // extension at long[blockLongs-2]: hst-imager writes a self-reference to the root
+        // block's own FS block number. Standard specifies 0; match hst-imager for compatibility.
+        block.writeBE32(UInt32(rootFSBlock), at: (blockLongs - 2) * 4)
+
         // sec_type = ST_ROOT = 1 at last long.
         block.writeBE32(UInt32(1), at: (blockLongs - 1) * 4)
 

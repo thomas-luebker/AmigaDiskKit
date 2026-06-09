@@ -110,13 +110,14 @@ public struct RootBlock {
         diskAltMins  = data.readBE32(at: (blockLongs -  9) * 4)
         diskAltTicks = data.readBE32(at: (blockLongs -  8) * 4)
 
-        creationDays  = diskAltDays
-        creationMins  = diskAltMins
-        creationTicks = diskAltTicks
+        // c_days/c_mins/c_ticks at blockLongs-7..-5 (disk creation date).
+        creationDays  = data.readBE32(at: (blockLongs - 7) * 4)
+        creationMins  = data.readBE32(at: (blockLongs - 6) * 4)
+        creationTicks = data.readBE32(at: (blockLongs - 5) * 4)
 
-        nextHash     = Int32(bitPattern: data.readBE32(at: (blockLongs - 5) * 4))
-        parentDir    = Int32(bitPattern: data.readBE32(at: (blockLongs - 4) * 4))
-        extension_   = Int32(bitPattern: data.readBE32(at: (blockLongs - 3) * 4))
+        nextHash     = Int32(bitPattern: data.readBE32(at: (blockLongs - 4) * 4))
+        parentDir    = Int32(bitPattern: data.readBE32(at: (blockLongs - 3) * 4))
+        extension_   = Int32(bitPattern: data.readBE32(at: (blockLongs - 2) * 4))
         secondaryType = Int32(bitPattern: data.readBE32(at: (blockLongs - 1) * 4))
     }
 }
