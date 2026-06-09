@@ -127,9 +127,9 @@ public struct LHAArchive {
         guard pos + 22 + nameLen + 2 <= data.count else { throw LHAError.truncatedHeader }
         let name       = String(bytes: data[(pos+22)..<(pos+22+nameLen)], encoding: .isoLatin1) ?? ""
         let crc        = LE16(data, pos + 22 + nameLen)
-        let dataStart  = pos + 2 + headerSize + 2   // skip header (size + body + 2-byte CRC)
-        // Level-0 header total = 2 + headerSize + 2  (leading byte + body + trailing CRC field)
-        // The "header size" field covers bytes 2..end, so total non-data = 2 + headerSize
+        // Level-0: headerSize (at pos+0) counts bytes from pos+2 through end-of-CRC inclusive.
+        // Total header = 2 + headerSize bytes; data starts immediately after.
+        let dataStart  = pos + 2 + headerSize
         let advance    = (2 + headerSize) + compSize
 
         guard pos + advance <= data.count else { throw LHAError.truncatedData(path: name) }
@@ -248,7 +248,8 @@ public struct LHAArchive {
     /// Normalise Amiga/DOS path separators and strip dangerous components.
     private static func sanitizePath(_ raw: String) -> String {
         raw
-            .replacingOccurrences(of: "\\", with: "/")  // DOS backslash
+            .replacingOccurrences(of: "\u{FF}", with: "/")  // Amiga LhA \xFF path separator
+            .replacingOccurrences(of: "\\", with: "/")      // DOS backslash
             .split(separator: "/", omittingEmptySubsequences: true)
             .filter { $0 != ".." && $0 != "." }
             .joined(separator: "/")
