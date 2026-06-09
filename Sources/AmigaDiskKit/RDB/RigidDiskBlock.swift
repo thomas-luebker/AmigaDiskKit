@@ -86,9 +86,15 @@ public struct RigidDiskBlock {
     /// - Parameters:
     ///   - partitionListLBA: Slice-relative LBA of the first PART block (0xFFFFFFFF = empty).
     ///   - fileSysHdrListLBA: Slice-relative LBA of the first FSHD block (0xFFFFFFFF = none).
+    ///   - highRDSKBlock: Slice-relative LBA of the highest block used for any RDB structure
+    ///     (the last PART block, LSEG block, or FSHD block — whichever is highest). AmigaOS
+    ///     uses this as an upper-bound guard when following linked-list pointers; a value of 0
+    ///     causes the ROM to treat partitionList pointers > 0 as out-of-range and ignore them,
+    ///     resulting in "Not a DOS disk" even when the PART block is structurally correct.
     public func serialize(
         partitionListLBA: UInt32 = 0xFFFFFFFF,
-        fileSysHdrListLBA: UInt32 = 0xFFFFFFFF
+        fileSysHdrListLBA: UInt32 = 0xFFFFFFFF,
+        highRDSKBlock: UInt32 = 0
     ) -> Data {
         var block = Data(count: 512)
         block.writeBE32(RigidDiskBlock.identifier, at: 0x00)
@@ -123,6 +129,11 @@ public struct RigidDiskBlock {
         // A value of 0 makes every partition appear to start at LBA 0 (the RDSK block),
         // causing "Not a DOS disk" because the RDSK magic is not a valid FFS DosType.
         block.writeBE32(heads * sectors, at: 0x90)
+        // 0x98: highRDSKBlock — highest slice-relative LBA occupied by any RDB structure
+        // (PART, FSHD, or LSEG). AmigaOS uses this as an upper-bound guard when following
+        // partitionList and fileSysHdrList pointers; 0 causes the ROM to reject PART blocks
+        // at LBAs > 0 as "out of range", silently producing "Not a DOS disk" at boot.
+        block.writeBE32(highRDSKBlock, at: 0x98)
         block.writeAmigaString(diskVendor,   at: 0xA0, length: 8)
         block.writeAmigaString(diskProduct,  at: 0xA8, length: 16)
         block.writeAmigaString(diskRevision, at: 0xB8, length: 4)

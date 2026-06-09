@@ -47,7 +47,7 @@ public enum DiskLayout {
 /// Filesystem formatting (writing DOS boot blocks) is out of scope — that is Phase 3+.
 public enum DiskBuilder {
 
-    // RDSK lives at slice LBA 0; PART blocks start at slice LBA 3.
+    // RDSK lives at slice LBA 0; default PART start for fresh builds (no pre-existing metadata).
     private static let firstPartSliceLBA: UInt32 = 3
 
     /// Build a disk image at `url` with the given layout.
@@ -81,11 +81,59 @@ public enum DiskBuilder {
 
     // MARK: - Private helpers
 
+    /// Walk all FSHD blocks (and each one's LSEG chain) starting at `fshdSliceLBA`,
+    /// returning the highest slice-relative LBA occupied by any FSHD or LSEG block.
+    /// Returns 0 if the pointer is 0xFFFFFFFF or any read fails.
+    private static func highestFSHDChainLBA(
+        device: BlockDevice,
+        sliceStartLBA: Int64,
+        fshdSliceLBA: UInt32
+    ) -> Int {
+        guard fshdSliceLBA != 0xFFFFFFFF else { return 0 }
+        var highest = 0
+        var currentFSHD: UInt32 = fshdSliceLBA
+        var fshdGuard = 0
+        while currentFSHD != 0xFFFFFFFF && fshdGuard < 64 {
+            guard currentFSHD > 0,
+                  let fshdData = try? device.readBlock(at: sliceStartLBA + Int64(currentFSHD)),
+                  fshdData.count >= 512,
+                  fshdData.readBE32(at: 0) == 0x46534844  // 'FSHD'
+            else { break }
+            highest = max(highest, Int(currentFSHD))
+            fshdGuard += 1
+            // dn_SegList: first LSEG block pointer at FSHD offset 0x48
+            // (confirmed by binary analysis of hst-imager output — DevNode layout
+            //  in hst-amiga places SegList at offset 0x28 within DevNode, which
+            //  starts at FSHD offset 0x20, giving absolute offset 0x48)
+            let dnSegList = fshdData.readBE32(at: 0x48)
+            var currentLSEG: UInt32 = dnSegList
+            var lsegGuard = 0
+            while currentLSEG != 0xFFFFFFFF && lsegGuard < 1024 {
+                guard currentLSEG > 0,
+                      let lsegData = try? device.readBlock(at: sliceStartLBA + Int64(currentLSEG)),
+                      lsegData.count >= 512,
+                      lsegData.readBE32(at: 0) == 0x4C534547  // 'LSEG'
+                else { break }
+                highest = max(highest, Int(currentLSEG))
+                lsegGuard += 1
+                let lsNext = lsegData.readBE32(at: 0x10)  // ls_Next
+                if lsNext == currentLSEG { break }
+                currentLSEG = lsNext
+            }
+            let nextFSHD = fshdData.readBE32(at: 0x10)  // FSHD.next
+            if nextFSHD == currentFSHD { break }
+            currentFSHD = nextFSHD
+        }
+        return highest
+    }
+
     private static func writeRDB(
         device: BlockDevice,
         geometry: DiskGeometry,
         sliceStartLBA: Int64,
-        partitions: [PartitionSpec]
+        partitions: [PartitionSpec],
+        fileSysHdrListLBA: UInt32 = 0xFFFFFFFF,
+        firstPartLBA: UInt32 = firstPartSliceLBA
     ) throws {
         // Assign cylinder ranges to each partition spec.
         var resolved: [(spec: PartitionSpec, lowCyl: UInt32, highCyl: UInt32)] = []
@@ -112,8 +160,19 @@ public enum DiskBuilder {
             nextLow = highCyl + 1
         }
 
+        // Zero orphaned PART blocks in LBAs 1..<firstPartLBA.
+        // hst-imager format PiStorm leaves a PART block at slice LBA 1. FSHD/LSEG blocks
+        // may occupy LBAs above that — only zero blocks whose magic matches PART.
+        let zeroBlock = Data(count: 512)
+        for lba in 1..<Int(firstPartLBA) {
+            let existing = try device.readBlock(at: sliceStartLBA + Int64(lba))
+            if existing.count >= 4 && existing.readBE32(at: 0) == PartitionBlock.identifier {
+                try device.writeBlock(zeroBlock, at: sliceStartLBA + Int64(lba))
+            }
+        }
+
         // Compute slice-relative LBAs for each PART block.
-        let partLBAs: [UInt32] = (0..<partitions.count).map { firstPartSliceLBA + UInt32($0) }
+        let partLBAs: [UInt32] = (0..<partitions.count).map { firstPartLBA + UInt32($0) }
 
         // Write PART blocks (forward order; next-LBA pointer is known for all).
         for i in 0..<partitions.count {
@@ -131,9 +190,18 @@ public enum DiskBuilder {
         }
 
         // Write RDSK block at slice LBA 0.
+        // highRDSKBlock = highest LBA occupied by any RDB structure (FSHD/LSEG chain end is
+        // firstPartLBA-1; last PART block is firstPartLBA+numParts-1; take the maximum).
+        // AmigaOS uses this as an upper-bound guard when traversing linked-list pointers —
+        // a value of 0 causes the ROM to ignore partitionList entries at LBAs > 0.
+        let lastPartLBA = partitions.isEmpty ? 0 : partLBAs[partitions.count - 1]
+        let fshdChainEnd = firstPartLBA > DiskBuilder.firstPartSliceLBA ? firstPartLBA - 1 : 0
+        let highRDSKBlock = UInt32(max(Int(fshdChainEnd), Int(lastPartLBA)))
         let rdsk = RigidDiskBlock(geometry: geometry)
         let partitionListLBA: UInt32 = partitions.isEmpty ? 0xFFFFFFFF : partLBAs[0]
-        let rdskData = rdsk.serialize(partitionListLBA: partitionListLBA)
+        let rdskData = rdsk.serialize(partitionListLBA: partitionListLBA,
+                                      fileSysHdrListLBA: fileSysHdrListLBA,
+                                      highRDSKBlock: highRDSKBlock)
         try device.writeBlock(rdskData, at: sliceStartLBA)
     }
 
@@ -156,9 +224,40 @@ public enum DiskBuilder {
         partitions: [PartitionSpec]
     ) throws {
         let device = try BlockDevice(url: url)
+
+        // Preserve the fileSysHdrList from the existing RDSK so FSHD/LSEG blocks
+        // written by a prior tool (e.g. hst-imager format PiStorm --file-system-path)
+        // remain reachable from the new RDSK.  Without this, AmigaOS has no FFS handler
+        // and fails to mount the partition with "Not a DOS disk".
+        // Read fileSysHdrList directly from the RDSK block — avoids the PART-chain
+        // traversal in RigidDiskBlock.scan(), which throws if a hst-imager-written PART
+        // block fails our checksum (different summedLongs convention), causing try? to
+        // return nil and leaving existingFSHdrList = 0xFFFFFFFF.
+        var existingFSHdrList: UInt32 = 0xFFFFFFFF
+        if let rdskData = try? device.readBlock(at: sliceStartLBA),
+           let rdsk = try? RigidDiskBlock(data: rdskData) {
+            existingFSHdrList = rdsk.fileSysHdrList
+        }
+
+        // Place PART blocks after the FSHD/LSEG chain so we don't overwrite LSEG blocks.
+        // hst-imager format PiStorm writes FSHD at slice LBA 2 and LSEG at LBAs 3–65
+        // (63 blocks for FFS v47.4). Placing PART blocks at LBA 3 overwrites LSEGs,
+        // breaking the FFS handler load and causing "Not a DOS disk" at boot.
+        var firstPartLBA: UInt32 = DiskBuilder.firstPartSliceLBA
+        if existingFSHdrList != 0xFFFFFFFF {
+            let chainEnd = highestFSHDChainLBA(device: device,
+                                               sliceStartLBA: sliceStartLBA,
+                                               fshdSliceLBA: existingFSHdrList)
+            if chainEnd >= Int(DiskBuilder.firstPartSliceLBA) {
+                firstPartLBA = UInt32(chainEnd + 1)
+            }
+        }
+
         let geometry = try DiskGeometry(sizeBytes: sliceSizeBytes)
         try writeRDB(device: device, geometry: geometry,
-                     sliceStartLBA: sliceStartLBA, partitions: partitions)
+                     sliceStartLBA: sliceStartLBA, partitions: partitions,
+                     fileSysHdrListLBA: existingFSHdrList,
+                     firstPartLBA: firstPartLBA)
     }
 
     private static func buildMBR(
