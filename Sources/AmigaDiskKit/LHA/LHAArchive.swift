@@ -155,7 +155,9 @@ public struct LHAArchive {
         let origSize   = Int(LE32(data, pos + 11))
         let nameLen    = Int(data[pos + 21])
         guard pos + 22 + nameLen + 3 <= data.count else { throw LHAError.truncatedHeader }
-        var name       = String(bytes: data[(pos+22)..<(pos+22+nameLen)], encoding: .isoLatin1) ?? ""
+        // Some archivers null-terminate the name and store metadata after the null.
+        let rawName1   = String(bytes: data[(pos+22)..<(pos+22+nameLen)], encoding: .isoLatin1) ?? ""
+        var name       = rawName1.components(separatedBy: "\0").first ?? ""
         let crc        = LE16(data, pos + 22 + nameLen)
         // Layout: [name][crc16(2)][osid(1)][firstExtHdrSize(2)]
         var extPos     = pos + 22 + nameLen + 2 + 1  // past crc(2) + osid(1)
@@ -212,13 +214,14 @@ public struct LHAArchive {
         var nextSize = Int(LE16(data, pos + 24))
 
         while nextSize > 0 && extPos + nextSize <= data.count {
-            let extType = data[extPos + 2]
+            // Level-2 ext header format: [type(1), data(n), next_sz(2)] — type at index 0.
+            let extType = data[extPos]
             switch extType {
             case 0x01:  // filename
-                let nameBytes = data[(extPos+3)..<(extPos + nextSize - 2)]
+                let nameBytes = data[(extPos+1)..<(extPos + nextSize - 2)]
                 name = String(bytes: nameBytes, encoding: .isoLatin1) ?? ""
             case 0x02:  // directory
-                let dirBytes = data[(extPos+3)..<(extPos + nextSize - 2)]
+                let dirBytes = data[(extPos+1)..<(extPos + nextSize - 2)]
                 let dir = (String(bytes: dirBytes, encoding: .isoLatin1) ?? "")
                     .replacingOccurrences(of: "\u{FF}", with: "/")
                 name = dir + name
