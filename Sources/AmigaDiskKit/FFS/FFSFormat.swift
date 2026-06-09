@@ -257,7 +257,7 @@ public enum FFSFormatter {
 
         // Fixed header.
         block.writeBE32(UInt32(2),           at: 0)   // type = T_SHORT
-        block.writeBE32(UInt32(rootFSBlock), at: 4)   // header_key = own FS block
+        block.writeBE32(UInt32(0),           at: 4)   // header_key = 0 for root blocks (RKM spec; adflib/hst-imager convention)
         block.writeBE32(UInt32(0),           at: 8)   // high_seq = 0
         block.writeBE32(UInt32(htSize),      at: 12)  // ht_size
         block.writeBE32(UInt32(0),           at: 16)  // first_data = 0
