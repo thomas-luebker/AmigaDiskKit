@@ -203,7 +203,11 @@ public final class FFSFileSystem {
                 let dest = amigaPath.isEmpty
                     ? item.lastPathComponent
                     : "\(amigaPath)/\(item.lastPathComponent)"
-                try copyFromHost(hostURL: item, amigaPath: dest)
+                do {
+                    try copyFromHost(hostURL: item, amigaPath: dest)
+                } catch {
+                    fputs("disk fs copy: skipping '\(item.lastPathComponent)': \(error)\n", stderr)
+                }
             }
         } else {
             let data = try Data(contentsOf: hostURL)
