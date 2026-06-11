@@ -286,7 +286,7 @@ public enum FFSFormatter {
         block.writeBE32(ticks, at: (rDaysIdx + 2) * 4)        // r_ticks
 
         // diskName BSTR at long[blockLongs-20] (8 longs = 32 bytes, max 30-char name).
-        block.writeBSTR(spec.volumeName, at: (blockLongs - 20) * 4, maxLength: 32)
+        block.writeBSTR(spec.volumeName, at: (blockLongs - 20) * 4, maxLength: 31)
 
         // v_days/v_mins/v_ticks at long[blockLongs-10].
         block.writeBE32(days,  at: (blockLongs - 10) * 4)

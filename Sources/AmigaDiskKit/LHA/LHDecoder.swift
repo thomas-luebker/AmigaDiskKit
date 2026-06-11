@@ -91,12 +91,15 @@ struct LHDecoder {
 
     // MARK: - Tree reading
 
-    /// Read the C-tree (n==nc) or P-tree (n==np).
-    /// For C-tree: T-tree is read first (before the C-tree count) per lha.c block-header format.
-    /// For P-tree: count then direct 3-bit lengths.
+    /// Read a Huffman tree from the bitstream.
+    /// Returns (lookupTable, effectiveTableSize).
+    ///
+    /// C-tree (n == nc): T-tree is read FIRST, then nSymbols, then C-lengths via T-tree.
+    /// Reference order per block: blocksize → read_pt_len(NT) → read_c_len (nSymbols inside) → read_pt_len(NP).
+    /// P-tree (n == np): plain nSymbols → 3-bit lengths, no secondary tree.
     private func readTree(reader: inout BitReader, n: Int, tableSize: Int, bitCount: Int) throws -> ([UInt16], Int) {
         if n == nc {
-            // lha.c order: T-tree → C-tree count → C-tree lengths (T-tree encoded)
+            // T-tree MUST be read before nSymbols (bitstream order from reference lha.c).
             let (tTree, tTS) = try readTTree(reader: &reader)
             var nSymbols = Int(try reader.readBits(bitCount))
             if nSymbols == 0 {
@@ -109,16 +112,16 @@ struct LHDecoder {
             while i < nSymbols {
                 let t = Int(try huffmanDecode(tree: tTree, tableSize: tTS, reader: &reader))
                 switch t {
-                case 0: i += 1                                         // zero-length
-                case 1: i += Int(try reader.readBits(4)) + 3          // short run
-                case 2: i += Int(try reader.readBits(9)) + 20         // long run
+                case 0: i += 1                                              // zero-length
+                case 1: i += Int(try reader.readBits(4)) + 3               // short run
+                case 2: i += Int(try reader.readBits(9)) + 20              // long run
                 default:
                     lengths[i] = UInt8(t - 2); i += 1
                 }
             }
             return try buildTable(lengths: lengths, n: nSymbols, tableSize: tableSize)
         } else {
-            // P-tree: count then plain 3-bit lengths, no RLE; same extension rule as T-tree
+            // P-tree: nSymbols FIRST, then plain 3-bit lengths (no secondary tree).
             var nSymbols = Int(try reader.readBits(bitCount))
             if nSymbols == 0 {
                 let single = Int(try reader.readBits(bitCount))

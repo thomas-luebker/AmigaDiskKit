@@ -158,7 +158,8 @@ public final class FFSFileSystem {
     /// Write a file to the partition.
     /// - Parameter overwrite: When `true`, silently replace an existing file.
     ///   When `false` (default), throws `entryExists` if the path already exists.
-    public func writeFile(path: String, data fileData: Data, overwrite: Bool = false) throws {
+    /// - Parameter protection: Amiga protection bits (e.g. 0x40 for script bit). Default 0 = `----rwed`.
+    public func writeFile(path: String, data fileData: Data, overwrite: Bool = false, protection: UInt32 = 0) throws {
         let comps = pathComponents(path)
         guard let name = comps.last else { throw AmigaDiskError.pathNotFound(path: path) }
         let parentFSBlock = try resolveDirPath(comps.dropLast().joined(separator: "/"))
@@ -170,7 +171,7 @@ public final class FFSFileSystem {
                 throw AmigaDiskError.entryExists(path: path)
             }
         }
-        try writeFileInternal(name: name, fileData: fileData, parentFSBlock: parentFSBlock)
+        try writeFileInternal(name: name, fileData: fileData, parentFSBlock: parentFSBlock, protection: protection)
     }
 
     /// Read a file from the partition.
@@ -188,6 +189,8 @@ public final class FFSFileSystem {
 
     /// Copy a host file or directory tree into the partition at `amigaPath`.
     /// If the host item is a directory, its contents are placed inside `amigaPath`.
+    /// Files with the macOS executable bit set are written with Amiga script protection
+    /// bit 0x40 so AmigaOS `Execute` can run them as scripts.
     public func copyFromHost(hostURL: URL, amigaPath: String) throws {
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -206,12 +209,18 @@ public final class FFSFileSystem {
                 do {
                     try copyFromHost(hostURL: item, amigaPath: dest)
                 } catch {
+                    // Skip items that can't be accessed or named on FFS
+                    // (e.g. locale dirs with non-ASCII names and Latin-1 byte sequences
+                    // that macOS cannot reliably resolve as a UTF-8 path string).
                     fputs("disk fs copy: skipping '\(item.lastPathComponent)': \(error)\n", stderr)
                 }
             }
         } else {
             let data = try Data(contentsOf: hostURL)
-            try writeFile(path: amigaPath, data: data, overwrite: true)
+            let attrs = try? fm.attributesOfItem(atPath: hostURL.path)
+            let posix = (attrs?[.posixPermissions] as? Int) ?? 0
+            let protection: UInt32 = (posix & 0o111) != 0 ? 0x40 : 0
+            try writeFile(path: amigaPath, data: data, overwrite: true, protection: protection)
         }
     }
 
@@ -375,7 +384,7 @@ public final class FFSFileSystem {
         block.writeBE32(d, at: (bl - 23) * 4)
         block.writeBE32(m, at: (bl - 22) * 4)
         block.writeBE32(t, at: (bl - 21) * 4)
-        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 32)
+        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
         block.writeBE32(UInt32(0),    at: (bl - 4) * 4)  // hash_chain
         block.writeBE32(parent,       at: (bl - 3) * 4)  // parent
         block.writeBE32(UInt32(0),    at: (bl - 2) * 4)  // extension
@@ -387,7 +396,7 @@ public final class FFSFileSystem {
     private func buildFileHeaderBlock(
         own: UInt32, parent: UInt32, name: String,
         byteSize: UInt32, dataPtrs: [UInt32], htSize: Int,
-        firstExtBlock: UInt32
+        firstExtBlock: UInt32, protection: UInt32 = 0
     ) -> Data {
         let bl = fsBlockSize / 4
         var block = Data(count: fsBlockSize)
@@ -401,13 +410,13 @@ public final class FFSFileSystem {
         for (i, ptr) in dataPtrs.enumerated() {
             block.writeBE32(ptr, at: (6 + htSize - 1 - i) * 4)
         }
-        block.writeBE32(UInt32(0),    at: (bl - 48) * 4)  // protect
+        block.writeBE32(protection,   at: (bl - 48) * 4)  // protect
         block.writeBE32(byteSize,     at: (bl - 47) * 4)  // byte_size
         let (d, m, t) = Self.amigaDate(Date())
         block.writeBE32(d, at: (bl - 23) * 4)
         block.writeBE32(m, at: (bl - 22) * 4)
         block.writeBE32(t, at: (bl - 21) * 4)
-        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 32)
+        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
         block.writeBE32(UInt32(0),    at: (bl - 4) * 4)   // hash_chain
         block.writeBE32(parent,       at: (bl - 3) * 4)   // parent
         block.writeBE32(firstExtBlock, at: (bl - 2) * 4)  // extension (first ext block or 0)
@@ -586,7 +595,7 @@ public final class FFSFileSystem {
 
     // MARK: - File write
 
-    private func writeFileInternal(name: String, fileData: Data, parentFSBlock: UInt32) throws {
+    private func writeFileInternal(name: String, fileData: Data, parentFSBlock: UInt32, protection: UInt32 = 0) throws {
         let htSize = fsBlockSize / 4 - 56
         let numDataBlocks = fileData.isEmpty ? 0 : (fileData.count + fsBlockSize - 1) / fsBlockSize
         let numExtBlocks  = numDataBlocks > htSize
@@ -624,7 +633,7 @@ public final class FFSFileSystem {
         let headerData = buildFileHeaderBlock(
             own: fileHeaderBlock, parent: parentFSBlock, name: name,
             byteSize: UInt32(fileData.count), dataPtrs: headerPtrs,
-            htSize: htSize, firstExtBlock: firstExt
+            htSize: htSize, firstExtBlock: firstExt, protection: protection
         )
         try writeFSBlock(fileHeaderBlock, headerData)
 
