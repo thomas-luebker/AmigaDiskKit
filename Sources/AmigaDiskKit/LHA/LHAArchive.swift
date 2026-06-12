@@ -125,7 +125,9 @@ public struct LHAArchive {
         let origSize   = Int(LE32(data, pos + 11))
         let nameLen    = Int(data[pos + 21])
         guard pos + 22 + nameLen + 2 <= data.count else { throw LHAError.truncatedHeader }
-        let name       = String(bytes: data[(pos+22)..<(pos+22+nameLen)], encoding: .isoLatin1) ?? ""
+        // Amiga LhA stores the file note (comment) after a NUL inside the name field.
+        let rawName    = String(bytes: data[(pos+22)..<(pos+22+nameLen)], encoding: .isoLatin1) ?? ""
+        let name       = rawName.components(separatedBy: "\0").first ?? ""
         let crc        = LE16(data, pos + 22 + nameLen)
         // Level-0: headerSize (at pos+0) counts bytes from pos+2 through end-of-CRC inclusive.
         // Total header = 2 + headerSize bytes; data starts immediately after.
