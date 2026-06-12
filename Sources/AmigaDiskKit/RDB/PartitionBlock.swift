@@ -194,7 +194,9 @@ public struct KnownDosType {
     public static let dos2: UInt32 = 0x444F5302  // DOS\2 — FFS (no-intl, rare)
     public static let dos3: UInt32 = 0x444F5303  // DOS\3 — FFS
     public static let dos5: UInt32 = 0x444F5305  // DOS\5 — FFS+INTL
-    public static let dos7: UInt32 = 0x444F5307  // DOS\7 — FFS2 (large partition)
+    public static let dos6: UInt32 = 0x444F5306  // DOS\6 — FFS2 long filenames
+    public static let dos7: UInt32 = 0x444F5307  // DOS\7 — FFS2 long filenames + INTL
+
     public static let pds3: UInt32 = 0x50445303  // PDS\3 — PFS3
 
     public static func isOFS(_ dosType: UInt32) -> Bool {
@@ -202,7 +204,17 @@ public struct KnownDosType {
     }
 
     public static func isFFS(_ dosType: UInt32) -> Bool {
-        dosType == dos2 || dosType == dos3 || dosType == dos5 || dosType == dos7
+        dosType == dos2 || dosType == dos3 || dosType == dos5 || dosType == dos6 || dosType == dos7
+    }
+
+    /// DOS\6 / DOS\7 — FFS2 long-filename mode (LNFS). Directory and file
+    /// header blocks use a different layout: the filename (up to 110 chars)
+    /// lives in the old comment area (block end − 184), the comment field is
+    /// gone, and the dates move to block end − 60. The classic name field at
+    /// block end − 80 is unused. Verified byte-for-byte against hst-imager
+    /// reference volumes and the FFS2 handler's on-hardware behavior.
+    public static func isLongNameFS(_ dosType: UInt32) -> Bool {
+        dosType == dos6 || dosType == dos7
     }
 
     public static func isPFS3(_ dosType: UInt32) -> Bool {

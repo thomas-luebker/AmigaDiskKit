@@ -1,4 +1,4 @@
-import Foundation
+    import Foundation
 
 /// Mounted FFS filesystem — high-level operations over a freshly-formatted partition.
 /// Supports: directory listing, mkdir -p, file write, file read, host↔image copy/extract.
@@ -15,6 +15,11 @@ public final class FFSFileSystem {
     private let allocator: FFSAllocator
     /// True for OFS (DOS\0/DOS\1) — data blocks carry a 24-byte header before payload.
     let isOFS: Bool
+    /// True for FFS2 long-filename mode (DOS\6/DOS\7) — entry header blocks
+    /// store the name in the old comment area and shift the dates. Writing
+    /// classic-layout headers on an LNFS volume produces files the real
+    /// FFS2 handler sees as nameless (Work Disk.info bug, 2026-06-12).
+    let isLongNameFS: Bool
 
     // MARK: - Init
 
@@ -30,6 +35,7 @@ public final class FFSFileSystem {
             throw AmigaDiskError.unsupportedDosType(partition.dosType)
         }
         isOFS = isOFSType
+        isLongNameFS = KnownDosType.isLongNameFS(partition.dosType)
         self.device        = device
         self.sliceStartLBA = sliceStartLBA
         self.partition     = partition
@@ -182,7 +188,7 @@ public final class FFSFileSystem {
         guard let entryBlock = try lookup(name: name, inDir: parentFSBlock) else {
             throw AmigaDiskError.pathNotFound(path: path)
         }
-        let entry = try FFSEntry.parse(data: try readFSBlock(entryBlock))
+        let entry = try FFSEntry.parse(data: try readFSBlock(entryBlock), longNames: isLongNameFS)
         guard entry.isFile else { throw AmigaDiskError.notAFile(path: path) }
         return try assembleFileData(entry: entry)
     }
@@ -219,7 +225,9 @@ public final class FFSFileSystem {
             let data = try Data(contentsOf: hostURL)
             let attrs = try? fm.attributesOfItem(atPath: hostURL.path)
             let posix = (attrs?[.posixPermissions] as? Int) ?? 0
-            let protection: UInt32 = (posix & 0o111) != 0 ? 0x40 : 0
+            // Script bit only for executable files that aren't binaries —
+            // see isBinaryLoadFile for why foreign binaries must not get it.
+            let protection: UInt32 = (posix & 0o111) != 0 && !isBinaryLoadFile(data) ? 0x40 : 0
             try writeFile(path: amigaPath, data: data, overwrite: true, protection: protection)
         }
     }
@@ -245,7 +253,7 @@ public final class FFSFileSystem {
                 try extractDirBlock(entryBlock, to: hostURL)
             } else {
                 // File
-                let entry = try FFSEntry.parse(data: data)
+                let entry = try FFSEntry.parse(data: data, longNames: isLongNameFS)
                 let fileData = try assembleFileData(entry: entry)
                 try fileData.write(to: hostURL)
             }
@@ -310,7 +318,9 @@ public final class FFSFileSystem {
         while chainBlock != 0 {
             let entryData = try readFSBlock(chainBlock)
             let ebl = entryData.count / 4
-            let entryName = entryData.readBSTR(at: (ebl - 20) * 4, maxLength: 32)
+            let entryName = isLongNameFS
+                ? entryData.readBSTR(at: (ebl - 46) * 4, maxLength: 112)
+                : entryData.readBSTR(at: (ebl - 20) * 4, maxLength: 32)
             if entryName.uppercased() == name.uppercased() { return chainBlock }
             chainBlock = entryData.readBE32(at: (ebl - 4) * 4)
         }
@@ -326,7 +336,7 @@ public final class FFSFileSystem {
             var chainBlock = dirData.readBE32(at: (6 + slot) * 4)
             while chainBlock != 0 {
                 let entryData = try readFSBlock(chainBlock)
-                let entry = try FFSEntry.parse(data: entryData)
+                let entry = try FFSEntry.parse(data: entryData, longNames: isLongNameFS)
                 entries.append(entry)
                 chainBlock = entry.hashChain
             }
@@ -381,10 +391,18 @@ public final class FFSFileSystem {
         block.writeBE32(UInt32(0),    at: (bl - 48) * 4) // protect
         block.writeBE32(UInt32(0),    at: (bl - 47) * 4) // byte_size
         let (d, m, t) = Self.amigaDate(Date())
-        block.writeBE32(d, at: (bl - 23) * 4)
-        block.writeBE32(m, at: (bl - 22) * 4)
-        block.writeBE32(t, at: (bl - 21) * 4)
-        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
+        if isLongNameFS {
+            // LNFS: name in the old comment area, dates at block end − 60.
+            block.writeBSTR(name, at: (bl - 46) * 4, maxLength: 110)
+            block.writeBE32(d, at: (bl - 15) * 4)
+            block.writeBE32(m, at: (bl - 14) * 4)
+            block.writeBE32(t, at: (bl - 13) * 4)
+        } else {
+            block.writeBE32(d, at: (bl - 23) * 4)
+            block.writeBE32(m, at: (bl - 22) * 4)
+            block.writeBE32(t, at: (bl - 21) * 4)
+            block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
+        }
         block.writeBE32(UInt32(0),    at: (bl - 4) * 4)  // hash_chain
         block.writeBE32(parent,       at: (bl - 3) * 4)  // parent
         block.writeBE32(UInt32(0),    at: (bl - 2) * 4)  // extension
@@ -404,7 +422,7 @@ public final class FFSFileSystem {
         block.writeBE32(own,                  at: 1 * 4)  // header_key
         block.writeBE32(UInt32(dataPtrs.count), at: 2 * 4) // high_seq
         block.writeBE32(UInt32(htSize),       at: 3 * 4)  // ht_size
-        block.writeBE32(UInt32(0),            at: 4 * 4)  // first_data
+        block.writeBE32(dataPtrs.first ?? 0,  at: 4 * 4)  // first_data
         // long[5] = checksum
         // Data ptrs stored reversed: table[htSize-1] = block 0, table[htSize-2] = block 1 …
         for (i, ptr) in dataPtrs.enumerated() {
@@ -413,10 +431,18 @@ public final class FFSFileSystem {
         block.writeBE32(protection,   at: (bl - 48) * 4)  // protect
         block.writeBE32(byteSize,     at: (bl - 47) * 4)  // byte_size
         let (d, m, t) = Self.amigaDate(Date())
-        block.writeBE32(d, at: (bl - 23) * 4)
-        block.writeBE32(m, at: (bl - 22) * 4)
-        block.writeBE32(t, at: (bl - 21) * 4)
-        block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
+        if isLongNameFS {
+            // LNFS: name in the old comment area, dates at block end − 60.
+            block.writeBSTR(name, at: (bl - 46) * 4, maxLength: 110)
+            block.writeBE32(d, at: (bl - 15) * 4)
+            block.writeBE32(m, at: (bl - 14) * 4)
+            block.writeBE32(t, at: (bl - 13) * 4)
+        } else {
+            block.writeBE32(d, at: (bl - 23) * 4)
+            block.writeBE32(m, at: (bl - 22) * 4)
+            block.writeBE32(t, at: (bl - 21) * 4)
+            block.writeBSTR(name, at: (bl - 20) * 4, maxLength: 31)
+        }
         block.writeBE32(UInt32(0),    at: (bl - 4) * 4)   // hash_chain
         block.writeBE32(parent,       at: (bl - 3) * 4)   // parent
         block.writeBE32(firstExtBlock, at: (bl - 2) * 4)  // extension (first ext block or 0)

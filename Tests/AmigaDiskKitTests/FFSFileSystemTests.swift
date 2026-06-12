@@ -266,4 +266,76 @@ final class FFSFileSystemTests: XCTestCase {
         let read = try fs2.readFile(path: "test.bin")
         XCTAssertEqual(read, content)
     }
+
+    // MARK: - DOS6/DOS7 long-filename (LNFS) header layout
+    //
+    // FFS2 LNFS stores the entry name in the old comment area (block end − 184)
+    // and moves the dates to block end − 60; the classic name field at block
+    // end − 80 stays empty. Writing classic-layout headers on a DOS\7 volume
+    // produced files the real FFS2 handler saw as nameless (the "Work volume
+    // shows the default floppy icon" hardware bug). Layout verified
+    // byte-for-byte against hst-imager reference volumes.
+
+    func testLNFS_fileHeaderLayout_DOS7() throws {
+        let (imgURL, _, _) = try makeFormattedImage(name: "DH0",
+                                                    dosType: KnownDosType.dos7, sizeMiB: 32)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "Disk.info", data: Data(repeating: 0xAB, count: 1332))
+        try fs.makeDirectory(path: "TestDir")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let fileBlock = try XCTUnwrap(try fs2.lookup(name: "Disk.info", inDir: fs2.rootFSBlock))
+        let dirBlock  = try XCTUnwrap(try fs2.lookup(name: "TestDir",  inDir: fs2.rootFSBlock))
+
+        let fileData = try fs2.readFSBlock(fileBlock)
+        let bl = fileData.count / 4
+        // LNFS name present in the old comment area, classic name field empty
+        XCTAssertEqual(fileData.readBSTR(at: (bl - 46) * 4, maxLength: 112), "Disk.info")
+        XCTAssertEqual(Int(fileData[(bl - 20) * 4]), 0, "classic name field must be empty on LNFS")
+        // Dates at block end − 60; classic date slots zero
+        XCTAssertNotEqual(fileData.readBE32(at: (bl - 15) * 4), 0, "LNFS days must be set")
+        XCTAssertEqual(fileData.readBE32(at: (bl - 23) * 4), 0, "classic days slot must be empty on LNFS")
+        // first_data points at the first data block (matches reference writer)
+        let htSize = bl - 56
+        let firstFromTable = fileData.readBE32(at: (6 + htSize - 1) * 4)
+        XCTAssertEqual(fileData.readBE32(at: 4 * 4), firstFromTable)
+        XCTAssertNotEqual(firstFromTable, 0)
+
+        let dirData = try fs2.readFSBlock(dirBlock)
+        XCTAssertEqual(dirData.readBSTR(at: (bl - 46) * 4, maxLength: 112), "TestDir")
+        XCTAssertEqual(Int(dirData[(bl - 20) * 4]), 0)
+        XCTAssertNotEqual(dirData.readBE32(at: (bl - 15) * 4), 0)
+    }
+
+    func testLNFS_listAndExtractRoundTrip_DOS7() throws {
+        let (imgURL, _, _) = try makeFormattedImage(name: "DH0",
+                                                    dosType: KnownDosType.dos7, sizeMiB: 32)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.makeDirectory(path: "Programs/MyTool")
+        try fs.writeFile(path: "Programs/MyTool/MyTool", data: Data(repeating: 0x4D, count: 4096))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let all = try fs2.listRecursive()
+        XCTAssertEqual(Set(all), ["Programs", "Programs/MyTool", "Programs/MyTool/MyTool"])
+        XCTAssertEqual(try fs2.readFile(path: "Programs/MyTool/MyTool").count, 4096)
+    }
+
+    func testClassic_firstDataSet_DOS3() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "file.bin", data: Data(repeating: 1, count: 100))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let blockNo = try XCTUnwrap(try fs2.lookup(name: "file.bin", inDir: fs2.rootFSBlock))
+        let data = try fs2.readFSBlock(blockNo)
+        let bl = data.count / 4
+        let htSize = bl - 56
+        XCTAssertEqual(data.readBE32(at: 4 * 4), data.readBE32(at: (6 + htSize - 1) * 4))
+        XCTAssertNotEqual(data.readBE32(at: 4 * 4), 0)
+        // Classic layout unchanged: name at block end − 80
+        XCTAssertEqual(data.readBSTR(at: (bl - 20) * 4, maxLength: 32), "file.bin")
+    }
 }

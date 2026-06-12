@@ -41,7 +41,9 @@ public struct FFSEntry {
 extension FFSEntry {
     /// Parse an FFS directory or file-header block from raw block data.
     /// Throws on checksum failure or unexpected secondary type.
-    static func parse(data: Data) throws -> FFSEntry {
+    /// `longNames` selects the FFS2 LNFS layout (DOS\6/DOS\7): name in the
+    /// old comment area (block end − 184), dates at block end − 60.
+    static func parse(data: Data, longNames: Bool = false) throws -> FFSEntry {
         let bl = data.count / 4
         guard bl >= 56 else {
             throw AmigaDiskError.readFailed(offset: 0, length: data.count,
@@ -82,11 +84,23 @@ extension FFSEntry {
 
         let protect    = data.readBE32(at: (bl - 48) * 4)
         let byteSize   = data.readBE32(at: (bl - 47) * 4)
-        let comment    = data.readBSTR(at: (bl - 46) * 4, maxLength: 80)
-        let days       = data.readBE32(at: (bl - 23) * 4)
-        let mins       = data.readBE32(at: (bl - 22) * 4)
-        let ticks      = data.readBE32(at: (bl - 21) * 4)
-        let name       = data.readBSTR(at: (bl - 20) * 4, maxLength: 32)
+        let comment: String
+        let name: String
+        let days, mins, ticks: UInt32
+        if longNames {
+            // LNFS: long filename occupies the old comment area; no comment field.
+            name    = data.readBSTR(at: (bl - 46) * 4, maxLength: 112)
+            comment = ""
+            days    = data.readBE32(at: (bl - 15) * 4)
+            mins    = data.readBE32(at: (bl - 14) * 4)
+            ticks   = data.readBE32(at: (bl - 13) * 4)
+        } else {
+            comment = data.readBSTR(at: (bl - 46) * 4, maxLength: 80)
+            days    = data.readBE32(at: (bl - 23) * 4)
+            mins    = data.readBE32(at: (bl - 22) * 4)
+            ticks   = data.readBE32(at: (bl - 21) * 4)
+            name    = data.readBSTR(at: (bl - 20) * 4, maxLength: 32)
+        }
         let hashChain  = data.readBE32(at: (bl -  4) * 4)
         let parent     = data.readBE32(at: (bl -  3) * 4)
         let extension_ = data.readBE32(at: (bl -  2) * 4)
