@@ -15,15 +15,22 @@ final class PFS3FormatterTests: XCTestCase {
         return try Data(contentsOf: url)
     }
 
-    /// Zero the volume_date field (bytes 22–27) of every rootblockextension
-    /// ('EX') sector. It is stamped from the wall clock at each UpdateDisk, so
-    /// the fixture can carry a 1-tick skew between creation and update stamps
-    /// that a pinned clock cannot reproduce. Everything else must match.
-    private func maskVolumeDates(_ data: Data) -> Data {
+    /// Zero the local-wall-clock date fields of every rootblockextension ('EX')
+    /// sector, so the golden comparison is timezone-independent:
+    ///   - volume_date (bytes 22–27): stamped from the wall clock at each
+    ///     UpdateDisk; the fixture can carry a 1-tick skew between creation and
+    ///     update stamps that a pinned clock cannot reproduce.
+    ///   - dd_creationdate (bytes 136–141): hst-amiga stamps this from LOCAL
+    ///     `DateTime.Now` (the rootblock creation date uses UTC). It is rewritten
+    ///     as soon as the deldir is used, so its exact value depends on the host
+    ///     timezone and is not meaningful to compare byte-for-byte.
+    /// Everything else must match.
+    private func maskWallClockDates(_ data: Data) -> Data {
         var out = data
         for sector in stride(from: 0, to: data.count, by: 512) {
             if data.readBE16(at: sector) == PFS3.extensionBlockID {
-                for i in 22 ..< 28 { out[out.startIndex + sector + i] = 0 }
+                for i in 22 ..< 28 { out[out.startIndex + sector + i] = 0 }    // volume_date
+                for i in 136 ..< 142 { out[out.startIndex + sector + i] = 0 }  // dd_creationdate
             }
         }
         return out
@@ -64,13 +71,13 @@ final class PFS3FormatterTests: XCTestCase {
 
     func testGolden2GFormat() throws {
         let goldenRaw = try fixture("pfs3-2g-reserved-area.bin")
-        let golden = maskVolumeDates(goldenRaw)
+        let golden = maskWallClockDates(goldenRaw)
         let goldenRoot = try PFS3RootBlock(data: golden.subdata(in: 2 * 512 ..< 3 * 512))
         let creation = AmigaDate(days: UInt32(goldenRoot.creationDay),
                                  minutes: UInt32(goldenRoot.creationMinute),
                                  ticks: UInt32(goldenRoot.creationTick))
 
-        let native = maskVolumeDates(try formatNative(highCyl: 3954, volumeName: "Workbench",
+        let native = maskWallClockDates(try formatNative(highCyl: 3954, volumeName: "Workbench",
                                                       creation: creation, sectors: 1024))
 
         if native != golden {
@@ -92,14 +99,14 @@ final class PFS3FormatterTests: XCTestCase {
 
     func testGolden8GSupermodeFormat() throws {
         let goldenRaw = try fixture("pfs3-8g-reserved-area.bin")
-        let golden = maskVolumeDates(goldenRaw)
+        let golden = maskWallClockDates(goldenRaw)
         let goldenRoot = try PFS3RootBlock(data: golden.subdata(in: 2 * 512 ..< 3 * 512))
         XCTAssertTrue(goldenRoot.options.contains(.superIndex))
         let creation = AmigaDate(days: UInt32(goldenRoot.creationDay),
                                  minutes: UInt32(goldenRoot.creationMinute),
                                  ticks: UInt32(goldenRoot.creationTick))
 
-        let native = maskVolumeDates(try formatNative(highCyl: 16229, volumeName: "Work",
+        let native = maskWallClockDates(try formatNative(highCyl: 16229, volumeName: "Work",
                                                       creation: creation, sectors: 4096))
 
         if native != golden {
