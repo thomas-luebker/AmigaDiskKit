@@ -12,11 +12,18 @@ AmigaDiskKit was created to replace [hst-imager](https://github.com/henrikstenga
 
 AmigaDiskKit uses `Int64` for every byte-offset calculation, end-to-end. There is no `UInt32` arithmetic in any I/O path. Partitions starting at 154 GiB (the Phase 6 validation maximum) work identically to partitions at 1 GiB.
 
-The v1.0 goal is that hst-imager becomes an optional user-facing fallback — not a required runtime dependency. AmigaImager builds must complete with `DISK_ENGINE=amigadiskkit` even if hst-imager is not installed.
+The v1.0 goal — hst-imager as an optional fallback, not a required runtime dependency — is **met**. AmigaImager's native path (default) makes zero hst-imager calls; builds complete with `DISK_ENGINE=amigadiskkit` whether or not hst-imager is installed.
 
-## Current Status (2026-06-08)
+## Current Status (2026-06-12)
 
-**Phase 7 complete.** Full dispatch coverage in AmigaImager. All RDB partition I/O routes through AmigaDiskKit when `DISK_ENGINE=amigadiskkit`.
+**Phase 9.5 complete.** Full dispatch coverage in AmigaImager with **zero hst-imager calls on the native path**. All RDB/FFS/PFS3 partition I/O and the PiStorm FAT32 boot partition route through AmigaDiskKit when `DISK_ENGINE=amigadiskkit` (the default).
+
+- **PFS3 (PDS3)** format/mount/read/write — boot-validated on real PiStorm hardware (Phase 9, 2026-06-12); byte-identical to hst-imager output.
+- **FAT32** native write for the PiStorm boot partition — golden-tested against hst-imager's FAT32 output.
+- **RDB FS-handler registration** (`disk rdb-fs-add`) embeds FFS DOS7 and pfs3aio PDS3 handler binaries into the FSHD/LSEG chain — byte-identical to hst-imager, golden-tested.
+- **Native LHA decoder** integrated into the build pipeline.
+
+The library is also linked in-process by the AmigaImager app (Disk Browser + native build engine), not only exec'd as the `amiga-tools` CLI.
 
 ### What works
 
@@ -30,22 +37,26 @@ The v1.0 goal is that hst-imager becomes an optional user-facing fallback — no
 | FFS / FFS2 format (DOS\3 / DOS\7) | ✅ |
 | FFS / FFS2 directory listing, mkdir -p | ✅ |
 | FFS / FFS2 file read + write | ✅ |
+| **PFS3 (PDS\3) format / mount / read / write** | ✅ |
+| **RDB FS-handler registration (`rdb-fs-add`, FFS + pfs3aio)** | ✅ |
+| **FAT32 write (PiStorm boot partition)** | ✅ |
 | Host → image copy (file or directory tree) | ✅ |
 | Image → host extract (file or directory tree) | ✅ |
 | Image path delete (file or directory) | ✅ |
 | Recursive directory listing | ✅ |
 | ADF extract (FFS and OFS, DD and HD) | ✅ |
-| LHA archive read (lh0 / lh5 / lh6 / lh7) | ✅ |
+| LHA archive read (lh0 / lh5 / lh6 / lh7), integrated in build pipeline | ✅ |
 | Bitmap cross-engine compatibility (LSB-first, reserved-offset) | ✅ |
 | On-mount bitmap repair (walk reachable tree, mark all entry blocks used) | ✅ |
 
-### Remaining before v1.0
+### Beyond v1.0
 
-| Item | Notes |
-|---|---|
-| FAT32 write | PiStorm boot partition (`mbr/1/`); needs native FAT32 write support |
-| LHA extraction in build pipeline | `extract_lha_to_host` uses system `lha` binary + hst fallback; native decoder exists but not yet integrated |
-| PFS3 format | Phase 9 decision gate; `rdb fs add` is the only blocker |
+The v1.0 capability set is complete (FFS, PFS3, FAT32, ADF, LHA, RDB). Active work
+is in adjacent areas tracked separately: the in-process build engine, the Disk
+Browser (read/write of `.hdf`/`.img`/`.adf`/`.lha` + physical media), and
+Greaseweazle floppy I/O (`Floppy/` — flux codecs + GW protocol). What remains here
+is parity/metadata nuance and the documented limitations below, not missing
+filesystem capability.
 
 ### Validation history
 
@@ -79,6 +90,13 @@ AmigaDiskKit/
         FFSFileSystem.swift     — mounted FFS: list, mkdir, read/write, copy, extract, delete
         FFSEntry.swift          — directory entry parse; ffsHashName()
         FFSVolume.swift         — FFSVolume, RootBlock, FFSBootBlock
+      PFS3/                     — PFS3 (PDS\3) format / mount / read / write
+        PFS3Format.swift, PFS3Volume.swift, PFS3Core.swift, PFS3Blocks.swift, …
+      FAT/                      — native FAT32 write for the PiStorm boot partition
+        FAT32Format.swift, FAT32Volume.swift, FAT32Table.swift, FAT32BPB.swift, …
+      Floppy/                   — Greaseweazle flux codecs + ADF↔flux (real-floppy I/O)
+      Preview/                  — Quick Look decode core (ILBM/icon/IFF → RGBA, container listing)
+      Tooling/                  — icon/prefs/text transforms shared with the CLI
       LHA/
         LHAArchive.swift        — LHA archive reader (level 0/1/2, lh0/lh5/lh6/lh7)
         LHDecoder.swift         — LZH sliding-window decompressor
@@ -534,13 +552,26 @@ disk rdb-build <image> <size-bytes> [--mbr --fat-lba N
 disk rdb-reinit <image> [--slice-lba N]
                 --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]...
 disk rdb-format <image> <partition-name> [<volume-name>] [--slice-lba N]
+disk rdb-fs-add <image> <fs-binary> <dostype> [--name X]
+                [--fs-version maj.min] [--replace] [--slice-lba N]
+disk fat-format <image> <volume-label> [--mbr-index N]
 disk fs dir     <image> <partition> [<path>] [--recursive] [--slice-lba N]
+disk fs exists  <image> <partition> <path>   [--slice-lba N]
 disk fs mkdir   <image> <partition> <path>   [--slice-lba N]
 disk fs copy    <image> <partition> <host-src> <amiga-dst> [--slice-lba N]
+disk fs copydir <image> <partition> <host-src> <amiga-dst> [--slice-lba N]
 disk fs extract <image> <partition> <amiga-src> <host-dst> [--slice-lba N]
 disk fs delete  <image> <partition> <amiga-path> [--slice-lba N]
+disk fat ...    <image> ...                   — FAT32 listing/copy on the boot partition
 adf extract     <adf-file> <host-dest>
 ```
+
+`rdb-format` and `fs` dispatch by partition dostype: PDS\3 partitions use the
+native PFS3 engine (`PFS3Formatter` / `PFS3Volume`), everything else FFS.
+`rdb-fs-add` embeds a handler binary (FFS DOS7, pfs3aio PDS3) into the RDB
+FSHD/LSEG chain. The bundled `amiga-tools` build (`AmigaImagerTools/main.swift`)
+adds the host-side `lha` and icon/prefs/text subcommands on top of this `disk`
+surface.
 
 ### `--slice-lba` flag
 
@@ -602,11 +633,10 @@ FFS2 (DOS\7) is required for data partitions > 2 GiB because the 32-bit block co
 
 ## Known limitations
 
-- **FAT32**: read-only (MBR entry parsed, FAT sector not read). Writing the PiStorm boot partition remains on hst-imager.
-- **PFS3**: not supported. Partitions with DOS type PDS\3 are detected but cannot be formatted or mounted. The build pipeline falls back to hst-imager for any layout that includes a PFS3 partition.
 - **Hard links / soft links**: `markReachableEntryBlocksUsed` marks them used but does not follow them for I/O. This is safe; the blocks are protected from allocation. Hard/soft link I/O is not implemented.
-- **Non-recursive delete**: `FFSFileSystem.delete` on a directory frees only the directory block itself. Sub-entries are orphaned (not freed). This matches the build pipeline's usage: files are deleted, never non-empty directories.
-- **Write to ADF**: `openADF` opens a read-only `BlockDevice`. ADF write is not implemented.
+- **Non-recursive delete**: `FFSFileSystem.delete` on a directory frees only the directory block itself. Sub-entries are orphaned (not freed). This matches the build pipeline's usage: files are deleted, never non-empty directories — callers that need recursion delete post-order.
+- **ADF write via `FFSFileSystem`**: `openADF` defaults to read-only. Whole-disk ADF write (e.g. for real-floppy round-trips) goes through the `Floppy/ADFFloppyImage` path, not `FFSFileSystem`.
+- **Metadata parity**: file content, protection bits, RDB, and boot/root blocks are byte-identical to hst-imager / the native full-build golden. `copyFromHost` sets the AmigaOS script bit (`0x40`) for host-executable files but never for hunk/ELF load files (`isBinaryLoadFile`). A few golden-tolerated diffs (cosmetic icon positions, a timestamped marker, PFS3-only rescue tools) are script-side non-determinism, with the engine on the deterministic side.
 
 ## Testing
 

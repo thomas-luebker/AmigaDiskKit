@@ -297,9 +297,114 @@ private func rdbFormatCommand(formatArgs: [String]) throws {
         fputs("rdb-format: partition '\(partName)' not found in \(imagePath)\n", stderr); exit(1)
     }
 
-    let spec = FFSFormatSpec(volumeName: volumeName)
-    try FFSFormatter.format(device: device, sliceStartLBA: sliceLBA, partition: part, rdb: rdb, spec: spec)
+    if KnownDosType.isPFS3(part.dosType) {
+        try PFS3Formatter.format(device: device, sliceStartLBA: sliceLBA, partition: part,
+                                 rdb: rdb, spec: PFS3FormatSpec(volumeName: volumeName))
+    } else {
+        let spec = FFSFormatSpec(volumeName: volumeName)
+        try FFSFormatter.format(device: device, sliceStartLBA: sliceLBA, partition: part, rdb: rdb, spec: spec)
+    }
     print("rdb-format: formatted '\(partName)' as '\(volumeName)' (\(part.dosTypeFormatted))")
+}
+
+// MARK: - disk fat-format
+
+private func fatFormatCommand(args fatArgs: [String]) throws {
+    var positionals: [String] = []
+    var mbrIndex = 1
+    var i = 0
+    while i < fatArgs.count {
+        if fatArgs[i] == "--mbr-index" {
+            i += 1
+            guard i < fatArgs.count, let v = Int(fatArgs[i]) else {
+                fputs("fat-format: --mbr-index needs a value\n", stderr); exit(1)
+            }
+            mbrIndex = v; i += 1
+        } else { positionals.append(fatArgs[i]); i += 1 }
+    }
+    guard positionals.count >= 2 else {
+        fputs("Usage: AmigaDiskCLI disk fat-format <image> <volume-label> [--mbr-index N]\n", stderr)
+        exit(1)
+    }
+    let device = try BlockDevice(url: URL(fileURLWithPath: positionals[0]))
+    let mbr = try MBRPartitionTable(data: try device.readBlock(at: 0))
+    guard mbrIndex >= 1, mbrIndex <= mbr.partitions.count else {
+        fputs("fat-format: MBR partition \(mbrIndex) not found\n", stderr); exit(1)
+    }
+    let entry = mbr.partitions[mbrIndex - 1]
+    try FAT32Formatter.format(device: device,
+                              partitionOffset: Int64(entry.lbaStart) * 512,
+                              sizeBytes: Int64(entry.lbaSectors) * 512,
+                              volumeLabel: positionals[1])
+    print("fat-format: formatted MBR partition \(mbrIndex) as FAT32 '\(positionals[1])' " +
+          "(\(entry.lbaSectors) sectors at LBA \(entry.lbaStart))")
+}
+
+// MARK: - disk rdb-fs-add
+
+private func rdbFsAddCommand(fsAddArgs: [String]) throws {
+    var positionals: [String] = []
+    var name = ""
+    var explicitVersion: UInt32? = nil
+    var replace = false
+    var explicitSliceLBA: Int64? = nil
+    var i = 0
+    while i < fsAddArgs.count {
+        switch fsAddArgs[i] {
+        case "--name":
+            i += 1
+            guard i < fsAddArgs.count else { fputs("--name needs a value\n", stderr); exit(1) }
+            name = fsAddArgs[i]; i += 1
+        case "--fs-version":
+            i += 1
+            let parts = i < fsAddArgs.count ? fsAddArgs[i].split(separator: ".") : []
+            guard parts.count == 2, let maj = UInt32(parts[0]), let min = UInt32(parts[1]) else {
+                fputs("--fs-version needs <major>.<minor>\n", stderr); exit(1)
+            }
+            explicitVersion = (maj << 16) | min; i += 1
+        case "--replace":
+            replace = true; i += 1
+        case "--slice-lba":
+            i += 1
+            guard i < fsAddArgs.count, let v = Int64(fsAddArgs[i]) else {
+                fputs("--slice-lba needs a value\n", stderr); exit(1)
+            }; explicitSliceLBA = v; i += 1
+        default:
+            positionals.append(fsAddArgs[i]); i += 1
+        }
+    }
+    guard positionals.count >= 3 else {
+        fputs("Usage: AmigaDiskCLI disk rdb-fs-add <image> <fs-binary> <dostype> [--name X] [--fs-version maj.min] [--replace] [--slice-lba N]\n", stderr)
+        exit(1)
+    }
+    guard let dosType = parseDosTypeName(positionals[2]) else {
+        fputs("rdb-fs-add: invalid dostype '\(positionals[2])'\n", stderr); exit(1)
+    }
+    let binary = try Data(contentsOf: URL(fileURLWithPath: positionals[1]))
+
+    let device = try BlockDevice(url: URL(fileURLWithPath: positionals[0]))
+    let sliceLBA: Int64
+    if let explicit = explicitSliceLBA {
+        sliceLBA = explicit
+    } else {
+        let first = try device.readBlock(at: 0)
+        if first.readBE8(at: 510) == 0x55 && first.readBE8(at: 511) == 0xAA,
+           let mbr = try? MBRPartitionTable(data: first),
+           let idx = mbr.partitions.firstIndex(where: { $0.partitionType == 0x76 }) {
+            sliceLBA = Int64(mbr.partitions[idx].lbaStart)
+        } else {
+            sliceLBA = 0
+        }
+    }
+
+    let result = try FileSystemRegistrar.addFileSystem(
+        device: device, sliceStartLBA: sliceLBA, binary: binary,
+        dosType: dosType, name: name, version: explicitVersion, replaceExisting: replace)
+    if result.alreadyRegistered {
+        print("rdb-fs-add: \(positionals[2].uppercased()) already registered (FSHD at LBA \(result.fshdLBA)) — no change")
+    } else {
+        print("rdb-fs-add: registered \(positionals[2].uppercased()) (\(binary.count) bytes, \(result.lsegCount) LSEG blocks, FSHD at LBA \(result.fshdLBA))")
+    }
 }
 
 // MARK: - disk fs
@@ -329,8 +434,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
     switch subcommand {
     case "dir":
         let amigaPath = positionals.count > 2 ? positionals[2] : ""
-        let fs      = try FFSFileSystem.open(imageURL: imageURL, partitionName: partName,
-                                             sliceStartLBA: sliceLBA)
+        let fs      = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
         if isRecursive {
             // Recursive listing: one relative path per line (no header).
             // Both files and directories are listed; caller filters by extension.
@@ -339,7 +443,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         } else {
             // Single-directory listing. Also handles file paths (exit 0 = exists).
             do {
-                let entries = try fs.listDirectory(path: amigaPath)
+                let entries = try fs.listEntries(path: amigaPath)
                 if entries.isEmpty {
                     print("(empty)")
                 } else {
@@ -355,7 +459,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
                 let comps = amigaPath.components(separatedBy: "/").filter { !$0.isEmpty }
                 let name  = comps.last ?? amigaPath
                 let parentPath = comps.dropLast().joined(separator: "/")
-                let parentEntries = (try? fs.listDirectory(path: parentPath)) ?? []
+                let parentEntries = (try? fs.listEntries(path: parentPath)) ?? []
                 guard let entry = parentEntries.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
                     fputs("disk fs dir: '\(amigaPath)' not found\n", stderr); exit(1)
                 }
@@ -369,8 +473,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         guard positionals.count >= 3 else {
             fputs("Usage: AmigaDiskCLI disk fs mkdir <image> <partition> <amiga-path>\n", stderr); exit(1)
         }
-        let fs = try FFSFileSystem.open(imageURL: imageURL, partitionName: partName,
-                                        sliceStartLBA: sliceLBA)
+        let fs = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
         try fs.makeDirectory(path: positionals[2])
         try fs.flush()
         print("disk fs mkdir: created '\(positionals[2])'")
@@ -379,8 +482,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         guard positionals.count >= 4 else {
             fputs("Usage: AmigaDiskCLI disk fs copy <image> <partition> <host-src> <amiga-dst>\n", stderr); exit(1)
         }
-        let fs = try FFSFileSystem.open(imageURL: imageURL, partitionName: partName,
-                                        sliceStartLBA: sliceLBA)
+        let fs = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
         try fs.copyFromHost(hostURL: URL(fileURLWithPath: positionals[2]),
                             amigaPath: positionals[3])
         try fs.flush()
@@ -390,8 +492,7 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         guard positionals.count >= 4 else {
             fputs("Usage: AmigaDiskCLI disk fs extract <image> <partition> <amiga-src> <host-dst>\n", stderr); exit(1)
         }
-        let fs = try FFSFileSystem.open(imageURL: imageURL, partitionName: partName,
-                                        sliceStartLBA: sliceLBA)
+        let fs = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
         try fs.extractToHost(amigaPath: positionals[2],
                              hostURL: URL(fileURLWithPath: positionals[3]))
         print("disk fs extract: '\(positionals[2])' → '\(positionals[3])'")
@@ -400,14 +501,107 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         guard positionals.count >= 3 else {
             fputs("Usage: AmigaDiskCLI disk fs delete <image> <partition> <amiga-path>\n", stderr); exit(1)
         }
-        let fs = try FFSFileSystem.open(imageURL: imageURL, partitionName: partName,
-                                        sliceStartLBA: sliceLBA)
+        let fs = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
         try fs.delete(path: positionals[2])
         try fs.flush()
         print("disk fs delete: '\(positionals[2])'")
 
     default:
         fputs("disk fs: unknown subcommand '\(subcommand)'\n", stderr); exit(1)
+    }
+}
+
+// MARK: - disk fat
+
+private func diskFatCommand(subcommand: String, fatArgs: [String]) throws {
+    var positionals: [String] = []
+    var mbrIndex = 0
+    var i = 0
+    while i < fatArgs.count {
+        switch fatArgs[i] {
+        case "--mbr-index":
+            i += 1
+            guard i < fatArgs.count, let v = Int(fatArgs[i]) else {
+                fputs("disk fat: --mbr-index needs a value\n", stderr); exit(1)
+            }
+            mbrIndex = v; i += 1
+        case "--recursive":
+            i += 1   // consumed by copydir
+        default:
+            positionals.append(fatArgs[i]); i += 1
+        }
+    }
+    guard !positionals.isEmpty else {
+        fputs("Usage: AmigaDiskCLI disk fat \(subcommand) <image> ...\n", stderr); exit(1)
+    }
+    let imageURL = URL(fileURLWithPath: positionals[0])
+
+    switch subcommand {
+    case "dir":
+        let fatPath = positionals.count > 1 ? positionals[1] : "/"
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex, readOnly: true)
+        guard try vol.exists(fatPath) else {
+            fputs("disk fat dir: '\(fatPath)' not found\n", stderr); exit(1)
+        }
+        let entries = (try? vol.listDirectory(fatPath)) ?? []
+        if entries.isEmpty {
+            print("(empty)")
+        } else {
+            print("  Type  Size        Name")
+            for e in entries.sorted(by: { $0.name.lowercased() < $1.name.lowercased() }) {
+                let kind = e.isDirectory ? "DIR " : "FILE"
+                let sz   = e.isDirectory ? "           " : String(format: "%11d", e.fileSize)
+                print("  \(kind)  \(sz)  \(e.name)")
+            }
+        }
+
+    case "exists":
+        guard positionals.count >= 2 else {
+            fputs("Usage: AmigaDiskCLI disk fat exists <image> <fat-path>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex, readOnly: true)
+        exit(try vol.exists(positionals[1]) ? 0 : 1)
+
+    case "mkdir":
+        guard positionals.count >= 2 else {
+            fputs("Usage: AmigaDiskCLI disk fat mkdir <image> <fat-path>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
+        try vol.makeDirectory(positionals[1])
+
+    case "copy":
+        guard positionals.count >= 3 else {
+            fputs("Usage: AmigaDiskCLI disk fat copy <image> <host-src> <fat-dst>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
+        try vol.copyFromHost(source: URL(fileURLWithPath: positionals[1]),
+                             destination: positionals[2])
+
+    case "copydir":
+        guard positionals.count >= 3 else {
+            fputs("Usage: AmigaDiskCLI disk fat copydir <image> <host-src-dir> <fat-dst-dir>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
+        try vol.copyDirectoryFromHost(source: URL(fileURLWithPath: positionals[1]),
+                                      destination: positionals[2])
+
+    case "extract":
+        guard positionals.count >= 3 else {
+            fputs("Usage: AmigaDiskCLI disk fat extract <image> <fat-src> <host-dst>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex, readOnly: true)
+        try vol.copyToHost(source: positionals[1],
+                           destination: URL(fileURLWithPath: positionals[2]))
+
+    case "delete":
+        guard positionals.count >= 2 else {
+            fputs("Usage: AmigaDiskCLI disk fat delete <image> <fat-path>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
+        try vol.delete(positionals[1])
+
+    default:
+        fputs("disk fat: unknown subcommand '\(subcommand)'\n", stderr); exit(1)
     }
 }
 
@@ -424,6 +618,8 @@ func usage() -> Never {
     print("         --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]")
     print("  \(prog) disk rdb-reinit <image> [--slice-lba N] --part ... — rewrite RDB in existing image")
     print("  \(prog) disk rdb-format <image> <part> [<vol>] [--slice-lba N]  — FFS format a partition")
+    print("  \(prog) disk rdb-fs-add <image> <fs-binary> <dostype> [--name X] [--fs-version maj.min] [--replace] [--slice-lba N]")
+    print("                                                          — register filesystem handler in RDB")
     print("  \(prog) disk fs dir     <image> <part> [<path>] [--recursive] [--slice-lba N] — list directory")
     print("  \(prog) disk fs mkdir   <image> <part> <path>  [--slice-lba N] — create directories")
     print("  \(prog) disk fs copy    <image> <part> <host-src> <amiga-dst> [--slice-lba N] — copy to image")
@@ -462,9 +658,16 @@ do {
         try rdbReinitCommand(args: Array(args.dropFirst(3)))
     case "rdb-format":
         try rdbFormatCommand(formatArgs: Array(args.dropFirst(3)))
+    case "rdb-fs-add":
+        try rdbFsAddCommand(fsAddArgs: Array(args.dropFirst(3)))
+    case "fat-format":
+        try fatFormatCommand(args: Array(args.dropFirst(3)))
     case "fs":
         guard args.count >= 4 else { usage() }
         try fsFsCommand(subcommand: args[3], fsArgs: Array(args.dropFirst(4)))
+    case "fat":
+        guard args.count >= 4 else { usage() }
+        try diskFatCommand(subcommand: args[3], fatArgs: Array(args.dropFirst(4)))
     default:
         usage()
     }

@@ -81,50 +81,16 @@ public enum DiskBuilder {
 
     // MARK: - Private helpers
 
-    /// Walk all FSHD blocks (and each one's LSEG chain) starting at `fshdSliceLBA`,
-    /// returning the highest slice-relative LBA occupied by any FSHD or LSEG block.
-    /// Returns 0 if the pointer is 0xFFFFFFFF or any read fails.
+    /// Highest slice-relative LBA occupied by any FSHD or LSEG block reachable
+    /// from `fshdSliceLBA`. Returns 0 if the pointer is 0xFFFFFFFF or any read fails.
     private static func highestFSHDChainLBA(
         device: BlockDevice,
         sliceStartLBA: Int64,
         fshdSliceLBA: UInt32
     ) -> Int {
-        guard fshdSliceLBA != 0xFFFFFFFF else { return 0 }
-        var highest = 0
-        var currentFSHD: UInt32 = fshdSliceLBA
-        var fshdGuard = 0
-        while currentFSHD != 0xFFFFFFFF && fshdGuard < 64 {
-            guard currentFSHD > 0,
-                  let fshdData = try? device.readBlock(at: sliceStartLBA + Int64(currentFSHD)),
-                  fshdData.count >= 512,
-                  fshdData.readBE32(at: 0) == 0x46534844  // 'FSHD'
-            else { break }
-            highest = max(highest, Int(currentFSHD))
-            fshdGuard += 1
-            // dn_SegList: first LSEG block pointer at FSHD offset 0x48
-            // (confirmed by binary analysis of hst-imager output — DevNode layout
-            //  in hst-amiga places SegList at offset 0x28 within DevNode, which
-            //  starts at FSHD offset 0x20, giving absolute offset 0x48)
-            let dnSegList = fshdData.readBE32(at: 0x48)
-            var currentLSEG: UInt32 = dnSegList
-            var lsegGuard = 0
-            while currentLSEG != 0xFFFFFFFF && lsegGuard < 1024 {
-                guard currentLSEG > 0,
-                      let lsegData = try? device.readBlock(at: sliceStartLBA + Int64(currentLSEG)),
-                      lsegData.count >= 512,
-                      lsegData.readBE32(at: 0) == 0x4C534547  // 'LSEG'
-                else { break }
-                highest = max(highest, Int(currentLSEG))
-                lsegGuard += 1
-                let lsNext = lsegData.readBE32(at: 0x10)  // ls_Next
-                if lsNext == currentLSEG { break }
-                currentLSEG = lsNext
-            }
-            let nextFSHD = fshdData.readBE32(at: 0x10)  // FSHD.next
-            if nextFSHD == currentFSHD { break }
-            currentFSHD = nextFSHD
-        }
-        return highest
+        FileSystemRegistrar.occupiedFSHDChainLBAs(
+            device: device, sliceStartLBA: sliceStartLBA, fshdHead: fshdSliceLBA
+        ).max() ?? 0
     }
 
     private static func writeRDB(

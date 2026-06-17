@@ -322,6 +322,82 @@ final class FFSFileSystemTests: XCTestCase {
         XCTAssertEqual(try fs2.readFile(path: "Programs/MyTool/MyTool").count, 4096)
     }
 
+    // MARK: - Entry metadata / volumeInfo (disk browser surface)
+
+    func testListEntriesMetadata_protectionAndDate() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "Script", data: Data("echo\n".utf8), protection: 0x40)
+        try fs.flush()
+
+        let volume: AmigaVolumeOperations = try openFS(imgURL: imgURL)
+        let entries = try volume.listEntries(path: "")
+        let entry = try XCTUnwrap(entries.first { $0.name == "Script" })
+        XCTAssertEqual(entry.protection, 0x40)
+        XCTAssertEqual(entry.byteSize, 5)
+        let modified = try XCTUnwrap(entry.modified)
+        // Stamped at write time — must be within the last hour.
+        XCTAssertLessThan(abs(modified.timeIntervalSinceNow), 3600)
+    }
+
+    func testVolumeInfo_freeSpaceShrinksAndRecovers() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        let before = try fs.volumeInfo()
+        XCTAssertEqual(before.volumeName, "DH0")
+        XCTAssertGreaterThan(before.totalBytes, 0)
+        XCTAssertGreaterThan(before.freeBytes, 0)
+        XCTAssertLessThan(before.freeBytes, before.totalBytes)
+
+        try fs.writeFile(path: "big.bin", data: Data(repeating: 0xAA, count: 256 * 1024))
+        try fs.flush()
+        let afterWrite = try openFS(imgURL: imgURL).volumeInfo()
+        XCTAssertLessThanOrEqual(afterWrite.freeBytes, before.freeBytes - 256 * 1024)
+
+        let fs2 = try openFS(imgURL: imgURL)
+        try fs2.delete(path: "big.bin")
+        try fs2.flush()
+        let afterDelete = try openFS(imgURL: imgURL).volumeInfo()
+        XCTAssertEqual(afterDelete.freeBytes, before.freeBytes)
+    }
+
+    // MARK: - ADF write support
+
+    /// Format a blank 880 KB ADF with the same synthetic geometry `openADF` uses.
+    private func makeADF(volumeName: String = "TestADF") throws -> URL {
+        let url = tmpDir.appendingPathComponent("test.adf")
+        let sizeBytes: Int64 = 880 * 1024
+        try BlockDevice.createBlank(url: url, sizeBytes: sizeBytes)
+        let geo = try DiskGeometry(sizeBytes: sizeBytes, heads: 1, sectors: 1)
+        let rdb = RigidDiskBlock(geometry: geo)
+        let part = PartitionBlock(name: volumeName, dosType: KnownDosType.dos3, lowCyl: 0,
+                                  highCyl: UInt32(sizeBytes / 512 - 1), geometry: geo,
+                                  sectorsPerFSBlock: 1)
+        let device = try BlockDevice(url: url)
+        try FFSFormatter.format(device: device, sliceStartLBA: 0, partition: part, rdb: rdb,
+                                spec: FFSFormatSpec(volumeName: volumeName))
+        return url
+    }
+
+    func testOpenADF_writableRoundTrip() throws {
+        let adfURL = try makeADF()
+        let payload = Data("ADF write test\n".utf8)
+
+        let fs = try FFSFileSystem.openADF(url: adfURL, readOnly: false)
+        try fs.makeDirectory(path: "S")
+        try fs.writeFile(path: "S/startup-sequence", data: payload)
+        try fs.flush()
+
+        let fs2 = try FFSFileSystem.openADF(url: adfURL)
+        XCTAssertEqual(try fs2.readFile(path: "S/startup-sequence"), payload)
+    }
+
+    func testOpenADF_defaultIsReadOnly() throws {
+        let adfURL = try makeADF()
+        let fs = try FFSFileSystem.openADF(url: adfURL)
+        XCTAssertThrowsError(try fs.writeFile(path: "nope", data: Data([1])))
+    }
+
     func testClassic_firstDataSet_DOS3() throws {
         let (imgURL, _, _) = try makeFormattedImage()
         let fs = try openFS(imgURL: imgURL)
@@ -337,5 +413,123 @@ final class FFSFileSystemTests: XCTestCase {
         XCTAssertNotEqual(data.readBE32(at: 4 * 4), 0)
         // Classic layout unchanged: name at block end − 80
         XCTAssertEqual(data.readBSTR(at: (bl - 20) * 4, maxLength: 32), "file.bin")
+    }
+
+    // MARK: - Capacity guards (disk full / file too large / self-copy)
+
+    func testWriteFile_diskFull_failsCleanlyAndKeepsPartitionUsable() throws {
+        let (imgURL, _, _) = try makeFormattedImage()  // 32 MiB partition
+        let fs = try openFS(imgURL: imgURL)
+        let freeBefore = try fs.volumeInfo().freeBytes
+
+        // Bigger than the whole partition → must throw diskFull without
+        // consuming any bitmap space (regression: a failed oversized copy
+        // used to leak every allocated block and brick the partition).
+        XCTAssertThrowsError(try fs.writeFile(path: "huge.bin",
+                                              data: Data(count: 33 * 1024 * 1024))) { error in
+            guard case AmigaDiskError.diskFull = error else {
+                return XCTFail("expected diskFull, got \(error)")
+            }
+        }
+        XCTAssertEqual(try fs.volumeInfo().freeBytes, freeBefore)
+
+        // Partition must remain fully usable.
+        try fs.writeFile(path: "small.txt", data: Data("still works\n".utf8))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.listDirectory().map(\.name), ["small.txt"])
+        XCTAssertEqual(try fs2.readFile(path: "small.txt"), Data("still works\n".utf8))
+    }
+
+    func testWriteFile_fileTooLarge_leavesExistingFileIntact() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        let original = Data("keep me\n".utf8)
+        try fs.writeFile(path: "huge.bin", data: original)
+
+        // > UInt32.max bytes cannot be represented in FFS byte_size; the guard
+        // must fire before the overwrite-delete (regression: this used to be
+        // a Swift overflow trap after writing gigabytes of data blocks).
+        let oversized = Data(count: Int(UInt32.max) + 1)
+        XCTAssertThrowsError(try fs.writeFile(path: "huge.bin", data: oversized,
+                                              overwrite: true)) { error in
+            guard case AmigaDiskError.fileTooLarge = error else {
+                return XCTFail("expected fileTooLarge, got \(error)")
+            }
+        }
+        XCTAssertEqual(try fs.readFile(path: "huge.bin"), original)
+    }
+
+    func testCopyFromHost_skipsTheImageItself() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+
+        // Host folder containing the image being written (the tester scenario:
+        // a Transfer folder with the output .img inside it). Hardlink rather
+        // than same-path so the identity check, not path comparison, is tested.
+        let transferDir = tmpDir.appendingPathComponent("transfer")
+        try FileManager.default.createDirectory(at: transferDir, withIntermediateDirectories: true)
+        try FileManager.default.linkItem(at: imgURL, to: transferDir.appendingPathComponent("disk.img"))
+        try Data("hello\n".utf8).write(to: transferDir.appendingPathComponent("readme.txt"))
+
+        try fs.copyFromHost(hostURL: transferDir, amigaPath: "Transfer")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.listDirectory(path: "Transfer").map(\.name), ["readme.txt"])
+        XCTAssertEqual(try fs2.readFile(path: "Transfer/readme.txt"), Data("hello\n".utf8))
+    }
+
+    // MARK: - Latin-1 (non-ASCII) filename round-trip
+
+    /// Amiga filenames are ISO-8859-1. Writing them as UTF-8 (the Swift default)
+    /// stored two bytes for accented characters, which the .isoLatin1 read path
+    /// then decoded as mojibake (`français` → `franÃ§ais`), and dropped locale
+    /// catalogs entirely. Names must survive a write/read round-trip byte-exact.
+    func testNonASCIIFilename_roundTrips() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.makeDirectory(path: "Catalogs")
+        try fs.makeDirectory(path: "Catalogs/français")
+        try fs.writeFile(path: "Catalogs/Español.catalog", data: Data([1, 2, 3]))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let names = try fs2.listDirectory(path: "Catalogs").map(\.name).sorted()
+        XCTAssertEqual(names, ["Español.catalog", "français"])
+        XCTAssertEqual(try fs2.listDirectory(path: "Catalogs/français").count, 0)
+    }
+
+    /// Pin the on-disk encoding: the accented name byte must be a single Latin-1
+    /// byte (ç = 0xE7), not the two-byte UTF-8 sequence (0xC3 0xA7). The Latin-1
+    /// directory uses a fresh image so 0xE7 can only come from the filename.
+    func testNonASCIIFilename_isLatin1OnDisk() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "ç.txt", data: Data([0]))
+        try fs.flush()
+
+        let raw = try Data(contentsOf: imgURL)
+        XCTAssertTrue(raw.contains(0xE7),
+                      "Latin-1 'ç' (0xE7) must be stored on disk, not UTF-8 0xC3 0xA7")
+    }
+
+    /// A decomposed (NFD) host name — `ñ` as `n` + U+0303 combining tilde, as
+    /// macOS may hand back — must recompose to the single Latin-1 byte (0xF1),
+    /// not store `n` followed by a substitution.
+    func testNonASCIIFilename_nfdNameRecomposes() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        let nfdName = "espan\u{0303}ol.txt"          // n + combining tilde
+        let nfcName = "español.txt"                   // single ñ (U+00F1)
+        XCTAssertNotEqual(Array(nfdName.unicodeScalars), Array(nfcName.unicodeScalars),
+                          "test inputs must actually differ in normalization")
+        try fs.writeFile(path: nfdName, data: Data([0]))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let names = try fs2.listDirectory().map(\.name)
+        XCTAssertEqual(names, [nfcName])
     }
 }

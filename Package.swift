@@ -7,7 +7,12 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
-        .library(name: "AmigaDiskKit", targets: ["AmigaDiskKit"]),
+        // Explicitly static: amiga-tools is copied standalone into the app's
+        // Resources and exec'd by the build scripts — a dynamic PackageProduct
+        // framework cannot be loaded from there (rpath + Team-ID signing
+        // mismatch → dyld abort). Static linking restores self-contained
+        // binaries for every client (app, amiga-tools, tests).
+        .library(name: "AmigaDiskKit", type: .static, targets: ["AmigaDiskKit"]),
         .executable(name: "AmigaDiskCLI", targets: ["AmigaDiskCLI"]),
     ],
     targets: [
