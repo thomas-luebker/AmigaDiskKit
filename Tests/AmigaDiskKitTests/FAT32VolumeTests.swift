@@ -262,4 +262,19 @@ final class FAT32VolumeTests: XCTestCase {
         }
         return dir
     }
+
+    // MARK: - Self-copy guard
+
+    func testCopyDirectoryFromHost_skipsTheImageItself() throws {
+        // Host folder containing the image being written; hardlinked so the
+        // identity check, not path comparison, is what's tested.
+        let dir = try tmpDirectory(files: ["readme.txt": "hello"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.linkItem(at: imageURL, to: dir.appendingPathComponent("disk.img"))
+
+        try vol.copyDirectoryFromHost(source: dir, destination: "/transfer")
+
+        let names = try vol.listDirectory("/transfer").map(\.name).sorted()
+        XCTAssertEqual(names, ["readme.txt"])
+    }
 }

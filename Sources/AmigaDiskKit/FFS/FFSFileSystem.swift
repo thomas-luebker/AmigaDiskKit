@@ -113,6 +113,18 @@ public final class FFSFileSystem {
 
     // MARK: - Public API
 
+    /// Volume name and capacity according to the on-disk root block and the
+    /// in-memory allocator bitmap.
+    public func volumeInfo() throws -> AmigaVolumeInfo {
+        let rootAbsByte = partAbsByte + Int64(rootFSBlock) * Int64(fsBlockSize)
+        let root = try RootBlock(data: try device.read(at: rootAbsByte, length: fsBlockSize))
+        return AmigaVolumeInfo(
+            volumeName: root.diskName,
+            totalBytes: Int64(layout.totalFSBlocks) * Int64(fsBlockSize),
+            freeBytes: Int64(allocator.freeBlockCount()) * Int64(fsBlockSize)
+        )
+    }
+
     /// List entries in the directory at `path`. Use "" or "/" for the volume root.
     public func listDirectory(path: String = "") throws -> [FFSEntry] {
         let dirFSBlock = try resolveDirPath(path)
@@ -166,6 +178,12 @@ public final class FFSFileSystem {
     ///   When `false` (default), throws `entryExists` if the path already exists.
     /// - Parameter protection: Amiga protection bits (e.g. 0x40 for script bit). Default 0 = `----rwed`.
     public func writeFile(path: String, data fileData: Data, overwrite: Bool = false, protection: UInt32 = 0) throws {
+        // FFS stores byte_size in a 32-bit field; checked here, before any
+        // overwrite-delete or block allocation, so an oversized write is a
+        // clean no-op instead of an overflow trap after gigabytes of I/O.
+        guard fileData.count <= Int(UInt32.max) else {
+            throw AmigaDiskError.fileTooLarge(path: path, size: fileData.count, maxSize: UInt64(UInt32.max))
+        }
         let comps = pathComponents(path)
         guard let name = comps.last else { throw AmigaDiskError.pathNotFound(path: path) }
         let parentFSBlock = try resolveDirPath(comps.dropLast().joined(separator: "/"))
@@ -202,6 +220,13 @@ public final class FFSFileSystem {
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: hostURL.path, isDirectory: &isDir) else {
             throw AmigaDiskError.pathNotFound(path: hostURL.path)
+        }
+        // Never copy the image into itself (e.g. a transfer folder that
+        // contains the .img being built) — it reads the file while writing
+        // it and fills the partition with garbage.
+        if let imageID = device.backingFileID, HostFileIdentity(path: hostURL.path) == imageID {
+            fputs("disk fs copy: skipping '\(hostURL.lastPathComponent)': it is the disk image being written\n", stderr)
+            return
         }
         if isDir.boolValue {
             try makeDirectory(path: amigaPath)
@@ -627,6 +652,16 @@ public final class FFSFileSystem {
         let numExtBlocks  = numDataBlocks > htSize
             ? (numDataBlocks - htSize + htSize - 1) / htSize : 0
 
+        // Reject up front instead of exhausting the bitmap partway through:
+        // allocate(count:) rolls back on failure, but the three allocation
+        // calls below are independent, so without this check a failure in a
+        // later call would leak the blocks claimed by the earlier ones.
+        let neededBlocks = 1 + numExtBlocks + numDataBlocks
+        let freeBlocks   = allocator.freeBlockCount()
+        guard neededBlocks <= freeBlocks else {
+            throw AmigaDiskError.diskFull(requiredBlocks: neededBlocks, freeBlocks: freeBlocks)
+        }
+
         let fileHeaderBlock = try allocator.allocate()
         let extBlocks  = try allocator.allocate(count: numExtBlocks)
         let dataBlocks = try allocator.allocate(count: numDataBlocks)
@@ -745,8 +780,8 @@ extension FFSFileSystem {
     /// flat ADF as a single partition: 1 head × 1 sector/track → 1 block/cylinder,
     /// cylinders = totalFSBlocks.  This gives partAbsByte = 0 and
     /// totalFSBlocks = fileSize / 512 without any RDB I/O.
-    public static func openADF(url: URL) throws -> FFSFileSystem {
-        let device = try BlockDevice(url: url, readOnly: true)
+    public static func openADF(url: URL, readOnly: Bool = true) throws -> FFSFileSystem {
+        let device = try BlockDevice(url: url, readOnly: readOnly)
         let fileSize: Int64 = try device.size
         guard fileSize >= 1024, fileSize % 512 == 0 else {
             throw AmigaDiskError.readFailed(offset: 0, length: 0,
@@ -785,24 +820,17 @@ extension FFSFileSystem {
         partitionName: String,
         sliceStartLBA: Int64? = nil
     ) throws -> FFSFileSystem {
-        let device = try BlockDevice(url: imageURL)
+        try open(device: BlockDevice(url: imageURL), partitionName: partitionName,
+                 sliceStartLBA: sliceStartLBA)
+    }
 
-        // Resolve slice start: explicit value, or MBR auto-detection.
-        let resolvedSliceLBA: Int64
-        if let explicit = sliceStartLBA {
-            resolvedSliceLBA = explicit
-        } else {
-            let firstSector = try device.readBlock(at: 0)
-            let hasMBR = firstSector.readBE8(at: 510) == 0x55 && firstSector.readBE8(at: 511) == 0xAA
-            if hasMBR,
-               let mbr = try? MBRPartitionTable(data: firstSector),
-               let rdbIdx = mbr.partitions.firstIndex(where: { $0.partitionType == 0x76 }) {
-                resolvedSliceLBA = Int64(mbr.partitions[rdbIdx].lbaStart)
-            } else {
-                resolvedSliceLBA = 0
-            }
-        }
-
+    /// Mount over an already-open device (shared with the caller).
+    public static func open(
+        device: BlockDevice,
+        partitionName: String,
+        sliceStartLBA: Int64? = nil
+    ) throws -> FFSFileSystem {
+        let resolvedSliceLBA = try resolveRDBSliceLBA(device: device, explicit: sliceStartLBA)
         let rdb = try RigidDiskBlock.scan(device: device, sliceStartLBA: resolvedSliceLBA)
         guard let partition = rdb.partitionBlocks.first(where: { $0.driveName == partitionName }) else {
             throw AmigaDiskError.pathNotFound(path: partitionName)

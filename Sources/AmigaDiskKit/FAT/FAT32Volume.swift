@@ -21,7 +21,8 @@ public final class FAT32Volume {
         try self.init(device: device, mbrIndex: mbrIndex)
     }
 
-    init(device: BlockDevice, mbrIndex: Int = 0) throws {
+    /// Attach to the FAT32 partition at `mbrIndex` over an already-open device.
+    public init(device: BlockDevice, mbrIndex: Int = 0) throws {
         let mbrData = try device.read(at: 0, length: 512)
         let mbr = try MBRPartitionTable(data: mbrData)
         guard mbrIndex < mbr.partitions.count else {
@@ -57,6 +58,13 @@ public final class FAT32Volume {
     /// Copy a host file into the FAT32 volume at `destination`.
     /// Parent directories must exist; overwrites any existing file.
     public func copyFromHost(source: URL, destination: String) throws {
+        // Never copy the image into itself (e.g. a transfer folder that
+        // contains the .img being built) — it reads the file while writing
+        // it and fills the partition with garbage.
+        if let imageID = fat.device.backingFileID, HostFileIdentity(path: source.path) == imageID {
+            fputs("disk fs copy: skipping '\(source.lastPathComponent)': it is the disk image being written\n", stderr)
+            return
+        }
         let data = try Data(contentsOf: source)
         try writeFile(data: data, at: normalize(destination))
     }
@@ -196,6 +204,13 @@ public final class FAT32Volume {
 
     private func writeFile(data: Data, at components: [String]) throws {
         guard !components.isEmpty else { return }
+        // FAT32 stores the file size in a 32-bit field; checked before the
+        // overwrite-delete below so an oversized write is a clean no-op
+        // instead of an overflow trap.
+        guard data.count <= Int(UInt32.max) else {
+            throw AmigaDiskError.fileTooLarge(path: components.joined(separator: "/"),
+                                              size: data.count, maxSize: UInt64(UInt32.max))
+        }
         let name = components.last!
         let parentComps = Array(components.dropLast())
         let parentCluster = try resolveDirectoryCluster(pathComponents: parentComps)

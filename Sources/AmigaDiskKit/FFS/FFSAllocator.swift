@@ -14,6 +14,14 @@ final class FFSAllocator {
     private var cursorBitmapIdx: Int = 0
     private var cursorLongIdx:   Int = 1
 
+    // Running free-block count, kept in sync by allocate/free/markUsed so that
+    // `freeBlockCount()` is O(1). A full popcount of the bitmap is O(partition
+    // size); `createFile` queries the free count once per file, so without this
+    // cache a large partition makes a multi-thousand-file copy O(files × size)
+    // (e.g. a 55 GiB partition: ~28k bitmap blocks scanned per file → effectively
+    // a hang). Seeded once at mount via `scanFreeBlockCount()`.
+    private var cachedFreeCount: Int = 0
+
     // MARK: - Init
 
     /// - Parameters:
@@ -31,12 +39,13 @@ final class FFSAllocator {
             let data = try device.read(at: byteOff, length: fsSize)
             bitmaps.append(data)
         }
+        cachedFreeCount = scanFreeBlockCount()
     }
 
     // MARK: - Allocation
 
     /// Allocate one free FS block, mark it as used, and return its partition-relative number.
-    /// Throws `AmigaDiskError.readFailed` (disk full) when no free block exists.
+    /// Throws `AmigaDiskError.diskFull` when no free block exists.
     ///
     /// Bit-to-block mapping follows the canonical Amiga FFS bitmap convention — confirmed
     /// byte-for-byte against hst-imager's `Bitmap.AdfSetBlockUsed`/`AdfIsBlockFree`
@@ -80,6 +89,7 @@ final class FFSAllocator {
                             let newWord = word & ~(UInt32(1) << UInt32(bitPos))
                             bitmaps[bitmapIdx].writeBE32(newWord, at: longIdx * 4)
                             dirty.insert(bitmapIdx)
+                            cachedFreeCount -= 1
                             cursorBitmapIdx = bitmapIdx
                             cursorLongIdx   = longIdx
                             return UInt32(layout.reserved + sectOfMap)
@@ -88,14 +98,23 @@ final class FFSAllocator {
                 }
             }
         }
-        throw AmigaDiskError.readFailed(offset: 0, length: 0, reason: "partition is full (no free blocks)")
+        throw AmigaDiskError.diskFull(requiredBlocks: 1, freeBlocks: 0)
     }
 
     /// Allocate `count` FS blocks and return their partition-relative numbers.
+    /// All-or-nothing: if the disk fills partway through, every block already
+    /// allocated by this call is freed again before the error propagates —
+    /// a failed allocation must never consume bitmap space (a leaked
+    /// near-full bitmap gets flushed to disk and bricks the partition).
     func allocate(count: Int) throws -> [UInt32] {
         var blocks: [UInt32] = []
         blocks.reserveCapacity(count)
-        for _ in 0 ..< count { blocks.append(try allocate()) }
+        do {
+            for _ in 0 ..< count { blocks.append(try allocate()) }
+        } catch {
+            for block in blocks { free(block) }
+            throw error
+        }
         return blocks
     }
 
@@ -113,8 +132,11 @@ final class FFSAllocator {
         let bitPos   = localBit % 32
         guard longIdx * 4 + 3 < bitmaps[bitmapIdx].count else { return }
         let word = bitmaps[bitmapIdx].readBE32(at: longIdx * 4)
-        bitmaps[bitmapIdx].writeBE32(word | (UInt32(1) << UInt32(bitPos)), at: longIdx * 4)
+        let newWord = word | (UInt32(1) << UInt32(bitPos))
+        guard newWord != word else { return }   // already free → don't double-count
+        bitmaps[bitmapIdx].writeBE32(newWord, at: longIdx * 4)
         dirty.insert(bitmapIdx)
+        cachedFreeCount += 1
     }
 
     /// Mark an FS block as used regardless of what the bitmap currently says.
@@ -134,6 +156,36 @@ final class FFSAllocator {
         guard newWord != word else { return }
         bitmaps[bitmapIdx].writeBE32(newWord, at: longIdx * 4)
         dirty.insert(bitmapIdx)
+        cachedFreeCount -= 1
+    }
+
+    // MARK: - Statistics
+
+    /// Number of free FS blocks. O(1): returns the running count maintained by
+    /// `allocate`/`free`/`markUsed` (seeded once at mount by `scanFreeBlockCount()`).
+    func freeBlockCount() -> Int { cachedFreeCount }
+
+    /// Full popcount of the in-memory bitmap. O(partition size) — only used once
+    /// at mount to seed `cachedFreeCount`; never per allocation.
+    /// Same bit-to-block mapping as `allocate()`; bits beyond the partition's
+    /// last mapped block are masked off (formatters leave them set).
+    private func scanFreeBlockCount() -> Int {
+        let totalMapBits = layout.totalFSBlocks - layout.reserved
+        var free = 0
+        for bitmapIdx in 0 ..< bitmaps.count {
+            let rangeStart = bitmapIdx * layout.bitsPerBitmapBlock
+            if rangeStart >= totalMapBits { break }
+            let longCount = bitmaps[bitmapIdx].count / 4
+            for longIdx in 1 ..< longCount {
+                let wordBitBase = rangeStart + (longIdx - 1) * 32
+                if wordBitBase >= totalMapBits { break }
+                var word = bitmaps[bitmapIdx].readBE32(at: longIdx * 4)
+                let validBits = totalMapBits - wordBitBase
+                if validBits < 32 { word &= (UInt32(1) << UInt32(validBits)) &- 1 }
+                free += word.nonzeroBitCount
+            }
+        }
+        return free
     }
 
     // MARK: - Flush

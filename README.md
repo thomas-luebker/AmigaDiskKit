@@ -1,106 +1,115 @@
 # AmigaDiskKit
 
-A native Swift library for reading and writing Amiga disk images. Parses and creates MBR + RDB disk layouts, formats and mounts FFS/FFS2 partitions, and reads ADF and LHA archives — all without any external tools or Python runtime.
+A native Swift library for reading and writing Amiga disk images — no external tools, no Python runtime, no third-party dependencies.
 
-## Goal
+AmigaDiskKit parses and creates MBR + RDB disk layouts; formats, mounts, and does full file I/O on FFS/OFS and PFS3 partitions; writes FAT32; reads and writes ADF floppies (including raw flux via Greaseweazle/SCP); reads LHA archives; and decodes Amiga artwork (ILBM/IFF, icons) to RGBA for previews. Every byte-offset calculation is `Int64` end-to-end, so partitions far beyond the 4 GiB mark behave identically to small ones (validated past 150 GiB).
 
-AmigaDiskKit was created to replace [hst-imager](https://github.com/henrikstengaard/hst-imager) as the disk-image backend for AmigaImager. hst-imager has two known bugs that block large-disk workflows:
+![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange) ![Platform macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-blue) ![License Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green)
 
-**Bug 1** — `rdb part format` silently writes a zero boot block for FFS partitions > 2 GiB (mitigated by upgrading those partitions to DOS\7 before format).
+## Features
 
-**Bug 2** — `FastFileSystemHelper.Mount` computes `bootBlockOffset = lowCyl × surfaces × blocksPerTrack × blockSize` in `uint32`, which wraps for `lowCyl >= 8321`. Any partition starting beyond ~4.3 GiB (cylinder 8320) is unreachable for file I/O — `fs dir` and `fs copy` throw `Invalid fast file system dos type '00000000' in boot block`. The format step uses `int64` and writes the correct boot block; only the mount/verify/copy path is broken.
-
-AmigaDiskKit uses `Int64` for every byte-offset calculation, end-to-end. There is no `UInt32` arithmetic in any I/O path. Partitions starting at 154 GiB (the Phase 6 validation maximum) work identically to partitions at 1 GiB.
-
-The v1.0 goal is that hst-imager becomes an optional user-facing fallback — not a required runtime dependency. AmigaImager builds must complete with `DISK_ENGINE=amigadiskkit` even if hst-imager is not installed.
-
-## Current Status (2026-06-08)
-
-**Phase 7 complete.** Full dispatch coverage in AmigaImager. All RDB partition I/O routes through AmigaDiskKit when `DISK_ENGINE=amigadiskkit`.
-
-### What works
-
-| Capability | Status |
+| Area | Capabilities |
 |---|---|
-| MBR parse + write (PiStorm layout) | ✅ |
-| Pure-RDB parse + write (Classic / MiSTer HDF) | ✅ |
-| RDB geometry, RDSK / PART / FSHD block parse | ✅ |
-| Create blank image with RDB (`rdb-build`) | ✅ |
-| Rewrite RDB in existing image (`rdb-reinit`) | ✅ |
-| FFS / FFS2 format (DOS\3 / DOS\7) | ✅ |
-| FFS / FFS2 directory listing, mkdir -p | ✅ |
-| FFS / FFS2 file read + write | ✅ |
-| Host → image copy (file or directory tree) | ✅ |
-| Image → host extract (file or directory tree) | ✅ |
-| Image path delete (file or directory) | ✅ |
-| Recursive directory listing | ✅ |
-| ADF extract (FFS and OFS, DD and HD) | ✅ |
-| LHA archive read (lh0 / lh5 / lh6 / lh7) | ✅ |
-| Bitmap cross-engine compatibility (LSB-first, reserved-offset) | ✅ |
-| On-mount bitmap repair (walk reachable tree, mark all entry blocks used) | ✅ |
+| **Disk layouts** | MBR parse + write (PiStorm layout) · pure-RDB parse + write (Classic / MiSTer HDF) · RDSK / PART / FSHD / LSEG parse · create blank image with RDB · rewrite RDB in an existing image |
+| **FFS / OFS** | Format FFS / FFS2 (DOS\0/\1/\3/\5/\7) · directory listing & `mkdir -p` · file read/write · host↔image copy (file or tree) · delete · on-mount bitmap repair |
+| **PFS3** | Format / mount / read / write PFS3 (PDS\3) partitions |
+| **FAT32** | Native FAT32 format + file I/O (BPB, FAT table, dir entries) |
+| **Floppies** | Read/write ADF (FFS & OFS, DD & HD) · Amiga MFM encode/decode · raw flux (SCP images, Greaseweazle protocol) |
+| **Archives** | LHA reader — header levels 0/1/2, methods lh0/lh5/lh6/lh7, CRC-16 verified |
+| **Previews** | Decode ILBM/IFF and Amiga icons (`.info`) to RGBA · container listing for Quick Look |
+| **Tooling** | Filename sanitizing, icon/prefs patching, text transforms |
+| **RDB FS registration** | Embed FFS / pfs3aio handler binaries into the FSHD/LSEG chain (`rdb-fs-add`) |
+| **Cross-engine safety** | Canonical Amiga FFS bitmap convention (LSB-first, reserved-offset) |
 
-### Remaining before v1.0
+## Installation
 
-| Item | Notes |
-|---|---|
-| FAT32 write | PiStorm boot partition (`mbr/1/`); needs native FAT32 write support |
-| LHA extraction in build pipeline | `extract_lha_to_host` uses system `lha` binary + hst fallback; native decoder exists but not yet integrated |
-| PFS3 format | Phase 9 decision gate; `rdb fs add` is the only blocker |
+Add AmigaDiskKit as a Swift Package Manager dependency:
 
-### Validation history
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/thomas-luebker/AmigaDiskKit.git", branch: "main")
+]
+```
 
-Five production builds (Phase 6, 2026-06-07) confirm end-to-end correctness across all three platforms and the Bug 2 trigger condition:
+Then add it to your target:
 
-- **Pass 4** — PiStorm, 3-partition 127 GB image, custom partition names (`WORK0`/`WORK1`/`WORK2`), `WORK1` starting at byte 4,296,499,200 (LowCyl 8325 — past the Bug 2 threshold). A recursive `amiga-tools disk fs copy` wrote 2.9 GB across 3,552 files / 246 directories onto `WORK1`. Zero errors. ✅
-- **Pass 5** — Identical setup with `DISK_ENGINE=hst` (control run). hst-imager throws `Invalid fast file system dos type '00000000'` on `WORK1`. Build fails. ❌
+```swift
+.target(name: "YourApp", dependencies: ["AmigaDiskKit"])
+```
 
-This is the definitive before-and-after: same partition, same payload, native engine ✅ vs hst-imager ❌.
+The package also builds a standalone CLI, `AmigaDiskCLI` (see [CLI reference](#cli-reference)).
+
+## Quick start
+
+```swift
+import AmigaDiskKit
+
+// Inspect a disk image (auto-detects MBR+RDB or pure-RDB)
+let info = try DiskImage.open(url: imageURL)
+for part in info.rdb.partitionBlocks {
+    print(part.driveName, part.dosTypeFormatted)   // e.g. "DH0  DOS\7"
+}
+
+// Mount a partition and list a directory
+let fs = try FFSFileSystem.open(imageURL: imageURL, partitionName: "DH0")
+for entry in try fs.listDirectory(path: "S") {
+    print(entry.name, entry.isDirectory ? "<dir>" : "\(entry.byteSize) bytes")
+}
+
+// Copy a host file in, then commit the bitmap (always flush after writes)
+try fs.copyFromHost(hostURL: localFile, amigaPath: "S/Startup-Sequence")
+try fs.flush()
+
+// Read an ADF floppy
+let adf = try FFSFileSystem.openADF(url: adfURL)
+let data = try adf.readFile(path: "C/Dir")
+
+// Read an LHA archive
+let archive = try LHAArchive(url: lhaURL)
+try archive.extract(to: destinationDirectory)
+```
+
+Create a blank image with an RDB partition table:
+
+```swift
+let layout = DiskLayout.pureRDB(partitions: [
+    PartitionSpec(name: "DH0", dosType: KnownDosType.dos3, sizeCylinders: 4165,
+                  isBootable: true, bootPriority: 0, sectorsPerFSBlock: 4),
+    PartitionSpec(name: "DH1", dosType: KnownDosType.dos7, sizeCylinders: 0,   // 0 = fill
+                  isBootable: false, bootPriority: 0, sectorsPerFSBlock: 4),
+])
+try DiskBuilder.build(url: imageURL, sizeBytes: 8_589_934_592, layout: layout)
+
+// build() writes the partition table only — format each partition separately
+let disk = try DiskImage.open(url: imageURL)
+let dh0 = disk.rdb.partitionBlocks[0]
+try FFSFormatter.format(device: BlockDevice(url: imageURL), partition: dh0, rdb: disk.rdb,
+                        spec: FFSFormatSpec(volumeName: "Workbench"))
+```
 
 ## Package layout
 
 ```
-AmigaDiskKit/
-  Package.swift
-  Sources/
-    AmigaDiskKit/
-      ImageIO/
-        BlockDevice.swift       — raw byte/block I/O over a flat image file
-        DiskGeometry.swift      — CHS geometry (16 heads × 63 sectors = 1008 blocks/cyl)
-        DiskBuilder.swift       — create blank images with MBR + RDB or pure RDB
-      MBR/
-        MBRPartitionTable.swift — MBR parse + serialize
-      RDB/
-        RigidDiskBlock.swift    — RDSK parse + serialize + linked-list scan
-        PartitionBlock.swift    — PART parse + serialize; KnownDosType constants
-        FileSystemHeaderBlock.swift — FSHD + LSEG parse
-      FFS/
-        FFSFormat.swift         — FFS / FFS2 format (boot block, bitmap, root block)
-        FFSAllocator.swift      — bitmap-based block allocator (LSB-first, canonical Amiga)
-        FFSFileSystem.swift     — mounted FFS: list, mkdir, read/write, copy, extract, delete
-        FFSEntry.swift          — directory entry parse; ffsHashName()
-        FFSVolume.swift         — FFSVolume, RootBlock, FFSBootBlock
-      LHA/
-        LHAArchive.swift        — LHA archive reader (level 0/1/2, lh0/lh5/lh6/lh7)
-        LHDecoder.swift         — LZH sliding-window decompressor
-      Parsing/
-        AmigaChecksum.swift     — Amiga RDSK/PART checksum; FFS block checksum; boot block checksum
-        Data+Parsing.swift      — BE8/BE16/BE32/LE16/LE32 read; readBSTR; readAmigaString
-        Data+Writing.swift      — BE8/BE16/BE32/LE16/LE32 write; writeBSTR; writeAmigaString
-      Diagnostics/
-        AmigaDiskError.swift    — typed error enum
-      DiskImage.swift           — top-level auto-detect open (MBR+RDB or pure-RDB)
-    AmigaDiskCLI/
-      main.swift                — standalone CLI (disk info/rdb-info/rdb-build/rdb-reinit/rdb-format/fs/adf)
-  Tests/
-    AmigaDiskKitTests/
-      DiskImageParserTests.swift — MBR + RDB golden-output tests
-      RDBParserTests.swift       — RDSK / PART / FSHD parse tests
-      RDBWriterTests.swift       — round-trip write tests (DiskBuilder)
-      FFSFormatterTests.swift    — FFS / FFS2 format tests
-      FFSFileSystemTests.swift   — mkdir, writeFile, copyFromHost, extractToHost, delete
-      Fixtures/
-        binary/                  — dd-extracted RDB areas and boot blocks from known-good images
-        golden/                  — hst-imager reference text output for comparison
+Sources/
+  AmigaDiskKit/
+    ImageIO/        BlockDevice (raw Int64 I/O) · DiskGeometry (CHS) · DiskBuilder
+    MBR/            MBRPartitionTable — parse + serialize
+    RDB/            RigidDiskBlock · PartitionBlock · FileSystemHeaderBlock · FileSystemRegistrar
+    FFS/            FFSFormat · FFSAllocator · FFSFileSystem · FFSEntry · FFSVolume
+    PFS3/           PFS3Format · PFS3Volume · PFS3Core · PFS3Blocks · PFS3DirEntry · PFS3Constants
+    FAT/            FAT32Format · FAT32Volume · FAT32Table · FAT32BPB · FAT32DirEntry
+    Floppy/         ADFFloppyImage · AmigaMFM · FluxMFM · FluxStreamCodec · SCPImage · GreaseweazleProtocol
+    Preview/        AmigaPreviewRenderer · PreviewContainerLister · IFF/ · Icon/
+    LHA/            LHAArchive · LHDecoder
+    Tooling/        FilenameSanitizer · IconPatcher · PrefsPatcher · TextTransform
+    Parsing/        AmigaChecksum · Data+Parsing · Data+Writing · AmigaDate
+    Diagnostics/    AmigaDiskError (typed error enum)
+    AmigaVolume.swift   DiskImage.swift   (top-level auto-detect open)
+  AmigaDiskCLI/
+    main.swift      standalone CLI (disk / fs / adf subcommands)
+Tests/
+  AmigaDiskKitTests/   237 tests across 26 files; binary + golden fixtures
 ```
 
 ## Architecture
@@ -112,19 +121,19 @@ BlockDevice          — raw I/O; Int64 offsets everywhere
   ↓
 MBRPartitionTable    — parse / write MBR first sector
 RigidDiskBlock       — scan first 16 LBAs for RDSK; traverse PART + FSHD lists
-DiskGeometry         — CHS geometry from byte size (16 × 63 = 1008 blocks/cyl)
+DiskGeometry         — CHS geometry from byte size (16 heads × 63 sectors = 1008 blocks/cyl)
 DiskBuilder          — orchestrate: blank file → MBR → RDSK → PART chain
   ↓
-FFSFormatter         — write boot block, bitmap blocks, root block onto a PART
-FFSAllocator         — load live bitmap from disk; allocate / free / markUsed; flush
-FFSFileSystem        — high-level ops: list, mkdir, writeFile, copyFromHost, extractToHost, delete
+FFSFormatter / PFS3Formatter / FAT32Format   — write filesystem metadata onto a partition
+FFSAllocator         — load live bitmap; allocate / free / markUsed; flush
+FFSFileSystem / PFS3Volume / FAT32Volume     — high-level list, mkdir, read/write, copy, extract, delete
   ↓
-AmigaDiskCLI         — CLI front-end (disk / adf subcommands)
+AmigaDiskCLI         — CLI front-end (disk / fs / adf subcommands)
 ```
 
 ### Key invariant: Int64 offsets
 
-Every byte-offset calculation uses `Int64`, including partition start (`lowCyl × blocksPerCylinder × 512`). No `UInt32` arithmetic appears in any I/O path. This is the core fix for hst-imager Bug 2.
+Every byte-offset calculation uses `Int64`, including partition start (`lowCyl × blocksPerCylinder × 512`). No `UInt32` arithmetic appears in any I/O path. This is what lets partitions starting well past the 4 GiB / cylinder-8320 mark be formatted, mounted, and copied to identically to partitions at 1 GiB.
 
 ```swift
 // RigidDiskBlock
@@ -135,18 +144,18 @@ public func byteOffset(forCylinder cylinder: UInt32) -> Int64 {
 
 ### Bitmap convention
 
-The canonical Amiga FFS bitmap convention (confirmed byte-for-byte against hst-amiga `Bitmap.cs`):
+The canonical Amiga FFS bitmap convention:
 
 - Domain: `sectOfMap = blockNum - reserved` (blocks below `reserved` have no bitmap representation)
 - Word index: `sectOfMap / 32` (word 0 = long immediately after the checksum at long[0])
 - Bit position: `sectOfMap % 32`, LSB-first (`1 << bitPos`)
 - Bit value: `1` = free, `0` = used
 
-A previous version used MSB-first, no `reserved` offset. It was internally self-consistent but byte-incompatible with hst-imager — every "free"/"used" bit one engine wrote was misread by the other as describing a different block, causing cross-engine overwrites of live directory headers (observed as `Invalid entry block type` during Aminet package installs). The fix is in `FFSAllocator` and `FFSFormatter.makeBitmapBlock`.
+This is byte-for-byte compatible with the canonical adflib/Amiga layout. An LSB-first, reserved-offset bitmap is required for cross-engine safety: a misaligned bitmap causes one engine to misread another's "free"/"used" bits and overwrite live directory headers. The convention lives in `FFSAllocator` and `FFSFormatter.makeBitmapBlock`.
 
 ### On-mount bitmap repair
 
-`FFSFileSystem.init` always walks the full reachable directory tree and calls `allocator.markUsed()` on every entry block (directory headers, file headers, extension blocks) it encounters. File data blocks are skipped — those are correctly tracked in the on-disk bitmap. This defense-in-depth pass ensures that even if the on-disk bitmap is stale after a cross-engine write sequence, the allocator starts each AmigaDiskKit session from a safe ground-truth state.
+`FFSFileSystem.init` walks the full reachable directory tree and calls `allocator.markUsed()` on every entry block (directory headers, file headers, extension blocks). File data blocks are skipped — those are tracked correctly in the on-disk bitmap. This defense-in-depth pass ensures the allocator starts each session from a safe ground-truth state even if the on-disk bitmap is stale after a cross-engine write sequence.
 
 ## API reference
 
@@ -190,7 +199,7 @@ public struct DiskGeometry {
 }
 ```
 
-Geometry is derived from byte size by rounding down to the nearest full cylinder. Matches hst-imager's standard geometry (16 × 63). Minimum 3 cylinders.
+Geometry is derived from byte size by rounding down to the nearest full cylinder (standard Amiga RDB geometry, 16 × 63). Minimum 3 cylinders.
 
 ### DiskBuilder
 
@@ -215,7 +224,6 @@ public enum DiskBuilder {
     public static func build(url: URL, sizeBytes: Int64, layout: DiskLayout) throws
 
     // Rewrite RDSK + PART blocks in an existing image without touching other content.
-    // Use this when the FAT partition was created by another tool (hst-imager --format PiStorm).
     public static func reinitPartitions(
         url: URL,
         sliceStartLBA: Int64,
@@ -225,9 +233,9 @@ public enum DiskBuilder {
 }
 ```
 
-`build` creates a zero-filled file and writes the partition table structure. It does not format the filesystems — call `FFSFormatter.format` separately for each partition.
+`build` creates a zero-filled file and writes the partition table structure. It does not format the filesystems — call `FFSFormatter.format` (or the PFS3/FAT32 formatter) separately for each partition.
 
-`reinitPartitions` rewrites only the RDSK + PART blocks at `sliceStartLBA`, leaving everything else (FAT, pre-existing data) intact. Used by the PiStorm build pipeline to replace hst-imager's `rdb part delete × 15 + rdb part add × N` sequence.
+`reinitPartitions` rewrites only the RDSK + PART blocks at `sliceStartLBA`, leaving everything else (an existing FAT partition, pre-existing data) intact.
 
 ### DiskImage (auto-detect open)
 
@@ -246,7 +254,7 @@ public struct DiskImage {
 }
 ```
 
-Detection: read first 512 bytes; if bytes 510–511 == `0x55 0xAA` → MBR present. Find first MBR entry with type `0x76` (Amiga RDB slice). Scan RDSK at that LBA. If no MBR (or no `0x76` entry), treat as pure-RDB at LBA 0.
+Detection: read the first 512 bytes; if bytes 510–511 == `0x55 0xAA` → MBR present. Find the first MBR entry with type `0x76` (Amiga RDB slice) and scan RDSK at that LBA. If no MBR (or no `0x76` entry), treat the image as pure-RDB at LBA 0.
 
 ### RigidDiskBlock
 
@@ -263,19 +271,17 @@ public struct RigidDiskBlock {
     public var partitionBlocks: [PartitionBlock]
     public var fileSystemHeaders: [FileSystemHeaderBlock]
 
-    // Construction (for writing)
     public init(geometry: DiskGeometry, vendor: String = "AmigaDiskKit",
                 product: String = "Virtual Disk", revision: String = "1.0")
     public func serialize(partitionListLBA: UInt32 = 0xFFFFFFFF,
                           fileSysHdrListLBA: UInt32 = 0xFFFFFFFF) -> Data
 
-    // Parsing (for reading)
     public static func scan(device: BlockDevice, sliceStartLBA: Int64) throws -> RigidDiskBlock
     public func byteOffset(forCylinder cylinder: UInt32) -> Int64
 }
 ```
 
-`scan` searches the first 16 LBAs at `sliceStartLBA` for the `RDSK` identifier (`0x5244534B`), validates the Amiga checksum, then traverses the PART and FSHD linked lists (up to 256 entries each). Gracefully stops on short read (truncated fixtures).
+`scan` searches the first 16 LBAs at `sliceStartLBA` for the `RDSK` identifier (`0x5244534B`), validates the Amiga checksum, then traverses the PART and FSHD linked lists (up to 256 entries each). It stops gracefully on a short read (truncated fixtures).
 
 ### PartitionBlock
 
@@ -299,7 +305,6 @@ public struct PartitionBlock {
     public func startByteOffset(rdb: RigidDiskBlock) -> Int64
     public func endByteOffset(rdb: RigidDiskBlock) -> Int64
 
-    // Construction (for writing)
     public init(name: String, dosType: UInt32, lowCyl: UInt32, highCyl: UInt32,
                 geometry: DiskGeometry, isBootable: Bool = false,
                 bootPriority: Int32 = 0, sectorsPerFSBlock: UInt32 = 1)
@@ -328,16 +333,6 @@ public struct FFSFormatSpec {
     public init(volumeName: String = "Empty", creationDate: Date = Date())
 }
 
-public struct FFSLayout {
-    public let totalFSBlocks: Int
-    public let rootBlockFSBlock: Int
-    public let bitmapBlockFSBlocks: [Int]
-    public let bitmapExtFSBlocks: [Int]
-    public let reserved: Int            // always 2
-    public let fsBlockSize: Int         // 512 (DOS\3) or 2048 (DOS\7)
-    public let bitsPerBitmapBlock: Int
-}
-
 public enum FFSFormatter {
     // Compute layout geometry without I/O (used by FFSFileSystem.init too)
     public static func layout(partition: PartitionBlock, rdb: RigidDiskBlock) -> FFSLayout
@@ -353,12 +348,12 @@ public enum FFSFormatter {
 }
 ```
 
-`format` writes the four categories of FFS metadata blocks. It does not touch data blocks. The bitmap is initialized with all writable blocks marked free, except: the 2 reserved blocks at partition start, all bitmap blocks, all bitmap extension blocks, and the root block.
+`format` writes the four categories of FFS metadata blocks (boot, bitmap, bitmap extension, root). It does not touch data blocks. The bitmap is initialized with all writable blocks marked free, except the 2 reserved blocks at partition start, all bitmap blocks, all bitmap extension blocks, and the root block.
 
 Block layout follows the Amiga standard:
 - Boot block: FS blocks 0–1 (always 1024 bytes = 2 physical sectors)
-- Bitmap blocks: FS blocks 2, 3, … (one per `bitsPerBitmapBlock` FS blocks; 25 fit in root block directly)
-- Bitmap extension blocks: follow bitmap blocks when more than 25 bitmap blocks are needed
+- Bitmap blocks: FS blocks 2, 3, … (one per `bitsPerBitmapBlock` FS blocks; 25 fit in the root block directly)
+- Bitmap extension blocks: follow bitmap blocks when more than 25 are needed
 - Root block: FS block `totalFSBlocks / 2`
 
 ### FFSFileSystem
@@ -394,22 +389,11 @@ public final class FFSFileSystem {
 }
 ```
 
-#### Path conventions
+**Path conventions** — `/` separator (`"S/Startup-Sequence"`); root is `""` or `"/"`; case-insensitive (FFS standard); `makeDirectory` is `mkdir -p`; `writeFile` with `overwrite: true` deletes the existing file first; `delete` is not recursive (deleting a non-empty directory orphans its contents).
 
-- All paths use `/` as separator: `"S/Startup-Sequence"`, `"Devs/Monitors"`.
-- The volume root is `""` or `"/"`.
-- Paths are case-insensitive (FFS standard).
-- `makeDirectory` is mkdir -p: creates intermediate components, no-ops on existing directories.
-- `writeFile` with `overwrite: true` deletes the existing file before writing.
-- `delete` is not recursive: deleting a non-empty directory orphans its contents.
+**OFS support** — when `partition.dosType` is OFS (DOS\0 / DOS\1), data-block assembly checks the block type field (`T_DATA = 8`) at read time, so OFS ADFs that store raw data without the 24-byte OFS header are detected by content rather than the boot-block DOS type.
 
-#### OFS support
-
-When `partition.dosType` is OFS (DOS\0 / DOS\1), `isOFS = true`. Data block assembly checks the block type field (`T_DATA = 8`) at read time — some OFS ADFs (e.g. WB3.2 ADF labeled DOS\1) store raw data without the 24-byte OFS header and are detected by the actual block content, not the boot block DOS type.
-
-#### `flush()` contract
-
-The allocator holds bitmap changes in memory. Every session that calls any write operation (writeFile, makeDirectory, copyFromHost, delete) must call `flush()` before closing. Missing `flush()` leaves the bitmap inconsistent on disk.
+**`flush()` contract** — the allocator holds bitmap changes in memory. Every session that calls any write operation (`writeFile`, `makeDirectory`, `copyFromHost`, `delete`) must call `flush()` before closing, or the on-disk bitmap is left inconsistent.
 
 #### FFSEntry
 
@@ -436,14 +420,6 @@ public struct FFSEntry {
 }
 ```
 
-#### FFS hash function
-
-```swift
-public func ffsHashName(_ name: String, htSize: Int) -> Int
-```
-
-Standard Amiga FFS hash: ASCII toupper, accumulate `hash = hash * 13 + char`, mask to 11 bits, modulo htSize. Used for directory lookup and insertion.
-
 ### LHAArchive
 
 ```swift
@@ -461,7 +437,7 @@ public struct LHAArchive {
 }
 ```
 
-Supports LHA header levels 0, 1, and 2. Compression methods: `-lh0-`/`-lzs-` (stored), `-lh5-` (13-bit dict), `-lh6-` (15-bit), `-lh7-` (16-bit). CRC-16 verified per member. Path sanitization strips `..` and `.` components and normalizes `\` to `/`.
+Supports LHA header levels 0, 1, and 2. Methods: `-lh0-`/`-lzs-` (stored), `-lh5-` (13-bit dict), `-lh6-` (15-bit), `-lh7-` (16-bit). CRC-16 verified per member. Path sanitization strips `..` and `.` components and normalizes `\` to `/`.
 
 ### MBRPartitionTable
 
@@ -521,42 +497,44 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
 }
 ```
 
-## CLI reference (`AmigaDiskCLI`)
+## CLI reference
 
-The standalone CLI included in the package. In AmigaImager it is compiled as `amiga-tools` and bundled in `Contents/Resources/`.
+`AmigaDiskCLI` is a standalone command-line front-end built by the package.
 
 ```
-disk info   <image>                                         — disk size and MBR table
-disk rdb-info <image>                                       — RDSK geometry, FSHD, PART list
-disk rdb-build <image> <size-bytes> [--mbr --fat-lba N
-                --fat-sectors N --rdb-lba N]
-                --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]...
+disk info       <image>                                     — disk size and MBR table
+disk rdb-info   <image>                                     — RDSK geometry, FSHD, PART list
+disk rdb-build  <image> <size-bytes> [--mbr --fat-lba N
+                 --fat-sectors N --rdb-lba N]
+                 --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]...
 disk rdb-reinit <image> [--slice-lba N]
-                --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]...
+                 --part name:dostype[:cyls[:boot[:pri[:fsblk]]]]...
 disk rdb-format <image> <partition-name> [<volume-name>] [--slice-lba N]
+disk rdb-fs-add <image> <fs-binary> <dostype> [--name X]
+                 [--fs-version maj.min] [--replace] [--slice-lba N]
+disk fat-format <image> <volume-label> [--mbr-index N]
 disk fs dir     <image> <partition> [<path>] [--recursive] [--slice-lba N]
+disk fs exists  <image> <partition> <path>   [--slice-lba N]
 disk fs mkdir   <image> <partition> <path>   [--slice-lba N]
 disk fs copy    <image> <partition> <host-src> <amiga-dst> [--slice-lba N]
+disk fs copydir <image> <partition> <host-src> <amiga-dst> [--slice-lba N]
 disk fs extract <image> <partition> <amiga-src> <host-dst> [--slice-lba N]
 disk fs delete  <image> <partition> <amiga-path> [--slice-lba N]
+disk fat ...    <image> ...                   — FAT32 listing/copy on the boot partition
 adf extract     <adf-file> <host-dest>
 ```
 
-### `--slice-lba` flag
+`rdb-format` and `fs` dispatch by partition dostype: PDS\3 partitions use the native PFS3 engine, everything else FFS. `rdb-fs-add` embeds a handler binary (FFS DOS7, pfs3aio PDS3) into the RDB FSHD/LSEG chain.
 
-All `disk rdb-*` and `disk fs` commands auto-detect the RDB slice start: if the image has a valid MBR with a type-`0x76` entry, that entry's `lbaStart` is used. Pass `--slice-lba N` to override (e.g. when calling from a script that already knows the offset).
+**`--slice-lba` flag** — all `disk rdb-*` and `disk fs` commands auto-detect the RDB slice start: if the image has a valid MBR with a type-`0x76` entry, that entry's `lbaStart` is used. Pass `--slice-lba N` to override.
 
-### Partition spec format
-
-`name:dostype[:cyls[:boot[:priority[:sectorsPerFSBlk]]]]`
-
+**Partition spec format** — `name:dostype[:cyls[:boot[:priority[:sectorsPerFSBlk]]]]`
 - `dostype` — symbolic (`DOS1`, `DOS3`, `DOS5`, `DOS7`, `PDS3`) or hex (`0x444F5307`)
 - `cyls` — cylinder count; `0` or omitted = fill remaining space (last partition only)
-- `boot` — `boot` or `1` to set bootable flag; omit for non-bootable
+- `boot` — `boot` or `1` to set bootable; omit for non-bootable
 - `priority` — boot priority (default 0)
 - `sectorsPerFSBlk` — FS block size multiplier: `1`=512 B, `4`=2048 B (default 1)
 
-Examples:
 ```bash
 # PiStorm: 2 GB boot (DOS\3, 2048-byte blocks) + fill remaining (DOS\7, 2048-byte blocks)
 disk rdb-build Amiga.img 32212254720 --mbr \
@@ -570,43 +548,27 @@ disk rdb-build ClassicAmiga.img 8589934592 \
   --part DH1:DOS7:0:0:0:4
 ```
 
-### `disk fs dir` on file paths
+## Format details
 
-`disk fs dir <image> <partition> <path>` exits 0 if `<path>` exists as either a file or directory. When `<path>` names a file, it prints a single-row listing. When `<path>` names a directory, it lists the directory contents. Non-zero exit = not found.
-
-### `disk fs dir --recursive`
-
-Outputs one relative path per line (files and directories interleaved). No header row. Used by the `fs_list_recursive` dispatch wrapper in `common.sh` to enumerate image contents.
-
-## Checksums
+### Checksums
 
 Three distinct checksum algorithms are used:
 
-**Amiga RDSK / PART checksum** (`embedAmigaChecksum`): Sum all 32-bit big-endian words in the block (including the checksum word itself, treated as 0 when computing). The checksum word is set so the sum equals 0 in 32-bit arithmetic (i.e. it holds the two's-complement negation of the sum of all other words). Stored at byte offset 0x08 in RDSK/PART blocks.
+- **Amiga RDSK / PART checksum** (`embedAmigaChecksum`) — sum all 32-bit big-endian words in the block (the checksum word counts as 0 when computing). The checksum word is set so the total is 0 in 32-bit arithmetic. Stored at byte offset 0x08.
+- **FFS block checksum** (`embedFFSBlockChecksum`) — same algorithm for directory / file-header / root blocks. Stored at long[5] (byte offset 20).
+- **FFS boot block checksum** (`embedFFSBootBlockChecksum`) — accumulate 32-bit big-endian words including carry (`sum += word; if sum < word: sum++`). The checksum word (byte offset 4) is set so the full result is 0. Matches adflib's boot-block verification.
 
-**FFS block checksum** (`embedFFSBlockChecksum`): Same algorithm but for directory / file-header / root blocks. Stored at long[5] (byte offset 20) in FFS blocks.
+### Geometry
 
-**FFS boot block checksum** (`embedFFSBootBlockChecksum`): Different algorithm — accumulate 32-bit big-endian words including carry: `sum += word; if sum < word: sum++`. The checksum word (at byte offset 4) is set so the full result is 0. This matches adflib and hst-imager's boot block verification.
+Standard RDB geometry: **16 heads × 63 sectors/track = 1008 blocks/cylinder**. Reserved cylinders 0 and 1 cover the RDSK block at slice LBA 0 plus PART blocks at slice LBAs 3, 4, …. `loCylinder = 2`, `rdbBlockHi = 2 × 1008 − 1 = 2015`.
 
-## Geometry details
-
-Standard RDB geometry used throughout: **16 heads × 63 sectors/track = 1008 blocks/cylinder**.
-
-Reserved cylinders: 0 and 1 (covers the RDSK block at slice LBA 0, plus PART blocks at slice LBAs 3, 4, …). `loCylinder = 2`, `rdbBlockHi = 2 × 1008 − 1 = 2015`.
-
-FS block sizes:
-- DOS\3 (FFS): 1 sector/FS block = 512-byte FS blocks
-- DOS\7 (FFS2): 4 sectors/FS block = 2048-byte FS blocks
-
-FFS2 (DOS\7) is required for data partitions > 2 GiB because the 32-bit block count in the FFS root block otherwise overflows. AmigaImager auto-upgrades large data partitions to DOS\7 before format.
+FS block sizes: DOS\3 (FFS) = 512-byte FS blocks; DOS\7 (FFS2) = 2048-byte FS blocks. FFS2 (DOS\7) is required for data partitions > 2 GiB because the 32-bit block count in the FFS root block otherwise overflows.
 
 ## Known limitations
 
-- **FAT32**: read-only (MBR entry parsed, FAT sector not read). Writing the PiStorm boot partition remains on hst-imager.
-- **PFS3**: not supported. Partitions with DOS type PDS\3 are detected but cannot be formatted or mounted. The build pipeline falls back to hst-imager for any layout that includes a PFS3 partition.
-- **Hard links / soft links**: `markReachableEntryBlocksUsed` marks them used but does not follow them for I/O. This is safe; the blocks are protected from allocation. Hard/soft link I/O is not implemented.
-- **Non-recursive delete**: `FFSFileSystem.delete` on a directory frees only the directory block itself. Sub-entries are orphaned (not freed). This matches the build pipeline's usage: files are deleted, never non-empty directories.
-- **Write to ADF**: `openADF` opens a read-only `BlockDevice`. ADF write is not implemented.
+- **Hard / soft links** — `markReachableEntryBlocksUsed` marks them used but does not follow them for I/O. The blocks are protected from allocation; link I/O is not implemented.
+- **Non-recursive delete** — `FFSFileSystem.delete` on a directory frees only the directory block itself; sub-entries are orphaned. Callers that need recursion delete post-order.
+- **ADF write via `FFSFileSystem`** — `openADF` defaults to read-only. Whole-disk ADF write (e.g. real-floppy round-trips) goes through `Floppy/ADFFloppyImage`, not `FFSFileSystem`.
 
 ## Testing
 
@@ -614,14 +576,22 @@ FFS2 (DOS\7) is required for data partitions > 2 GiB because the 32-bit block co
 # Run all tests
 swift test --package-path AmigaDiskKit
 
-# Specific test class
+# A single test class
 swift test --package-path AmigaDiskKit --filter FFSFileSystemTests
 ```
 
-Test count: 88+ tests across 5 test files. Binary fixtures in `Tests/AmigaDiskKitTests/Fixtures/binary/` are dd-extracted RDB areas and boot blocks from real AmigaImager builds (hst-imager v1.5.564 reference). Golden text fixtures in `Fixtures/golden/` are hst-imager `info` and `rdb info` output for the same images.
+237 tests across 26 files. Binary fixtures in `Tests/AmigaDiskKitTests/Fixtures/binary/` are `dd`-extracted RDB areas and boot blocks from known-good reference images; golden text fixtures in `Fixtures/golden/` are reference `info` / `rdb info` output for the same images.
 
 ## Requirements
 
 - Swift 5.9+
 - macOS 13+
 - No third-party dependencies
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
+
+## Acknowledgements
+
+AmigaDiskKit is the disk-image engine behind **[AmigaImager](https://www.Amiga-Imager.com)**. Block layouts and on-disk parity were cross-checked against [hst-imager](https://github.com/henrikstengaard/hst-imager) as a reference implementation.

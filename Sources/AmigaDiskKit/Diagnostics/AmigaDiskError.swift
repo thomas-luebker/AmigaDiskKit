@@ -24,9 +24,18 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
     case entryExists(path: String)
     case unsupportedDosType(UInt32)
 
+    // FAT32
+    case invalidFAT32Signature(found: UInt16)
+    case invalidFAT32BPB(reason: String)
+    case notFAT32(reason: String)
+
     // Geometry
     case partitionOffsetOverflow(lowCyl: UInt32, blocksPerCylinder: UInt32, blockSize: UInt32)
     case invalidGeometry(reason: String)
+
+    // Capacity
+    case diskFull(requiredBlocks: Int, freeBlocks: Int)
+    case fileTooLarge(path: String, size: Int, maxSize: UInt64)
 
     public var description: String {
         switch self {
@@ -69,6 +78,16 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
             return "partition start offset overflows Int64: lowCyl=\(lowCyl) blocksPerCylinder=\(blocksPerCylinder) blockSize=\(blockSize)"
         case .invalidGeometry(let reason):
             return "invalid geometry: \(reason)"
+        case .invalidFAT32Signature(let found):
+            return "invalid FAT32 boot sector signature: 0x\(String(found, radix: 16, uppercase: true)) (expected 0xAA55)"
+        case .invalidFAT32BPB(let reason):
+            return "invalid FAT32 BPB: \(reason)"
+        case .notFAT32(let reason):
+            return "volume is not FAT32: \(reason)"
+        case .diskFull(let requiredBlocks, let freeBlocks):
+            return "partition is full: need \(requiredBlocks) block(s), \(freeBlocks) free"
+        case .fileTooLarge(let path, let size, let maxSize):
+            return "file too large for filesystem: '\(path)' is \(size) bytes (max \(maxSize))"
         }
     }
 }
