@@ -30,14 +30,19 @@ final class PreviewRendererTests: XCTestCase {
     /// Build an 8x2, 1-bitplane, uncompressed ILBM: row0 = 0xAA (pixels
     /// 1,0,1,0,1,0,1,0), row1 = 0x55. Palette: 0=black, 1=white.
     private func makeILBM() -> Data {
-        let bmhd = chunk("BMHD",
-            be16(8) + be16(2) + be16(0) + be16(0) +      // w,h,x,y
-            [1, 0, 0, 0] +                               // planes,mask,compress,pad
-            be16(0) + [1, 1] + be16(8) + be16(2))        // transparent,xAsp,yAsp,pageW,pageH
+        var bmhdBody: [UInt8] = []
+        bmhdBody += be16(8) + be16(2) + be16(0) + be16(0)  // w,h,x,y
+        bmhdBody += [1, 0, 0, 0]                           // planes,mask,compress,pad
+        bmhdBody += be16(0) + [1, 1]                       // transparent,xAsp,yAsp
+        bmhdBody += be16(8) + be16(2)                      // pageW,pageH
+        let bmhd = chunk("BMHD", bmhdBody)
         let cmap = chunk("CMAP", [0, 0, 0, 0xFF, 0xFF, 0xFF])
         let body = chunk("BODY", [0xAA, 0x00, 0x55, 0x00])
-        let inner = Array("ILBM".utf8) + bmhd + cmap + body
-        return Data(Array("FORM".utf8) + be32(inner.count) + inner)
+        var inner = Array("ILBM".utf8)
+        inner += bmhd + cmap + body
+        var form = Array("FORM".utf8)
+        form += be32(inner.count) + inner
+        return Data(form)
     }
 
     /// Build a minimal DiskObject with one 8x1, depth-1 GadgetRender image whose
