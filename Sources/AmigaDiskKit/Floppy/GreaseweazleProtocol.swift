@@ -57,9 +57,11 @@ public enum GWError: LocalizedError {
     }
 }
 
-/// Byte transport to the device. The app implements this over a serial port;
-/// tests use a scripted mock.
-public protocol GreaseweazleTransport: AnyObject {
+/// Byte transport to a serial device. The app implements this over a serial
+/// port; tests use a scripted mock. Shared by the Greaseweazle and DrawBridge
+/// controllers (both are USB-serial), so it is named for the transport, not
+/// the device.
+public protocol SerialByteTransport: AnyObject {
     func write(_ bytes: [UInt8]) throws
     /// Read exactly `count` bytes, blocking up to an internal timeout.
     func readExactly(_ count: Int) throws -> [UInt8]
@@ -68,6 +70,9 @@ public protocol GreaseweazleTransport: AnyObject {
     /// Clear-comms reset handshake + flush buffers.
     func resetComms() throws
 }
+
+/// Back-compat alias for the original Greaseweazle-specific name.
+public typealias GreaseweazleTransport = SerialByteTransport
 
 /// User-tunable drive/read/write behavior.
 public struct GreaseweazleConfig: Sendable {
@@ -85,16 +90,23 @@ public struct GreaseweazleConfig: Sendable {
     public init() {}
 }
 
-public final class GreaseweazleController {
-    private let transport: GreaseweazleTransport
+public final class GreaseweazleController: FloppyDevice {
+    private let transport: SerialByteTransport
     public private(set) var info: GWInfo?
     public var config = GreaseweazleConfig()
     public var sampleFreq: Double { info?.sampleFreq ?? 72_000_000 }
 
-    public init(transport: GreaseweazleTransport, config: GreaseweazleConfig = .init()) {
+    public init(transport: SerialByteTransport, config: GreaseweazleConfig = .init()) {
         self.transport = transport
         self.config = config
     }
+
+    // MARK: - FloppyDevice
+
+    public var deviceDescription: String { info?.description ?? "Greaseweazle" }
+    /// Greaseweazle is a flux device end to end.
+    public var supportsFlux: Bool { true }
+    public func connectDevice() throws { _ = try connect() }
 
     // MARK: - Command plumbing
 
@@ -211,12 +223,9 @@ public final class GreaseweazleController {
 
     // MARK: - Whole-disk operations
 
-    public struct DiskProgress: Sendable {
-        public let track: Int
-        public let totalTracks: Int
-        public let sectorsFound: Int
-        public let sectorsExpected: Int
-    }
+    /// Shared whole-disk progress type (see `FloppyDevice.swift`). Kept as a
+    /// nested name for source compatibility with existing call sites.
+    public typealias DiskProgress = AmigaDiskKit.DiskProgress
 
     private func sleepMs(_ ms: Int) {
         if ms > 0 { Thread.sleep(forTimeInterval: Double(ms) / 1000.0) }
