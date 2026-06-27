@@ -66,13 +66,13 @@ public struct LHAArchive {
             return Data(compressed)
         case "-lh5-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
-                                 dictBits: 13, maxMatch: 256, nc: 510, np: 14).decode()
+                                 dictBits: 13, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
         case "-lh6-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
-                                 dictBits: 15, maxMatch: 256, nc: 510, np: 16).decode()
+                                 dictBits: 15, maxMatch: 256, nc: 510, np: 16, pbit: 5).decode()
         case "-lh7-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
-                                 dictBits: 16, maxMatch: 256, nc: 512, np: 17).decode()
+                                 dictBits: 16, maxMatch: 256, nc: 512, np: 17, pbit: 5).decode()
         default:
             throw LHAError.unsupportedMethod(m.method)
         }
