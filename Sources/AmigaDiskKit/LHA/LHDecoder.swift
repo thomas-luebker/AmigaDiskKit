@@ -8,9 +8,14 @@ import Foundation
 //   P-tree: encodes match positions (high bits of sliding-window offset)
 //
 // Parameters per method:
-//   lh5: dictBits=13, maxMatch=256, NC=510, NP=14
-//   lh6: dictBits=15, maxMatch=256, NC=510, NP=16
-//   lh7: dictBits=16, maxMatch=256, NC=512, NP=17
+//   lh5: dictBits=13, maxMatch=256, NC=510, NP=14, pbit=4
+//   lh6: dictBits=15, maxMatch=256, NC=510, NP=16, pbit=5
+//   lh7: dictBits=16, maxMatch=256, NC=512, NP=17, pbit=5
+//
+// pbit = number of bits for the P-tree symbol-count field (read_pt_len's `nbit`):
+// 4 for lh4/lh5 (NP<=14), 5 for lh6/lh7 (NP=16/17 cannot fit in 4 bits). Using 4
+// for lh6/lh7 desyncs the whole bitstream -> Huffman decode error on every lh6/lh7
+// archive (e.g. iGame.lha).
 
 struct LHDecoder {
     private static let NT        = 19   // number of T codes (for length-length tree)
@@ -24,14 +29,16 @@ struct LHDecoder {
     private let maxMatch: Int
     private let nc: Int
     private let np: Int
+    private let pbit: Int
 
-    init(data: Data, originalSize: Int, dictBits: Int, maxMatch: Int, nc: Int, np: Int) {
+    init(data: Data, originalSize: Int, dictBits: Int, maxMatch: Int, nc: Int, np: Int, pbit: Int) {
         self.srcData      = data
         self.originalSize = originalSize
         self.dictBits     = dictBits
         self.maxMatch     = maxMatch
         self.nc           = nc
         self.np           = np
+        self.pbit         = pbit
     }
 
     // MARK: - Decode entry point
@@ -53,7 +60,7 @@ struct LHDecoder {
                 blockRemain = Int(try reader.readBits(16))
                 if blockRemain == 0 { break }
                 (cTree, cTS) = try readTree(reader: &reader, n: nc, tableSize: 12, bitCount: Self.CBIT)
-                (pTree, pTS) = try readTree(reader: &reader, n: np, tableSize: dictBits, bitCount: 4)
+                (pTree, pTS) = try readTree(reader: &reader, n: np, tableSize: dictBits, bitCount: pbit)
             }
             blockRemain -= 1
 
