@@ -91,6 +91,14 @@ public struct LHAArchive {
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 20, maxMatch: 256, nc: 510, np: 21, pbit: 5).decode()
         default:
+            // Remaining methods:
+            //  -pm0-/-pm1-/-pm2- (PMarc): real but extremely rare; decoder TODO.
+            //  -lh2-/-lh3-: never finalised — NO reference implementation exists
+            //    (even lhasa does not decode them).
+            //  Note: LHARK writes "-lh7-" for its OWN incompatible algorithm
+            //    (lhasa calls it -lk7-); it cannot be distinguished from standard
+            //    -lh7- by the header, so those specific archives can't auto-decode
+            //    (the reference has the same limitation).
             throw LHAError.unsupportedMethod(m.method)
         }
     }
