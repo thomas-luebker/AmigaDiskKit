@@ -62,7 +62,7 @@ public struct LHAArchive {
         // which would cause BitReader to crash on out-of-bounds access at index 0.
         let compressed = data.subdata(in: m.dataOffset ..< m.dataOffset + m.compressedSize)
         switch m.method {
-        case "-lh0-", "-lz4-":
+        case "-lh0-", "-lz4-", "-pm0-":
             // Stored (no compression). NOTE: -lzs- is NOT stored — it is LArc
             // LZSS compression; routing it here silently corrupted lzs archives.
             return Data(compressed)
@@ -90,15 +90,19 @@ public struct LHAArchive {
             // template: HISTORY_BITS=20, OFFSET_BITS=5, NUM_CODES=510 → np=21).
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 20, maxMatch: 256, nc: 510, np: 21, pbit: 5).decode()
+        case "-pm1-":
+            var pm1 = PM1Decoder(data: compressed, originalSize: m.originalSize)
+            return try pm1.decode()
+        case "-pm2-":
+            var pm2 = PM2Decoder(data: compressed, originalSize: m.originalSize)
+            return try pm2.decode()
         default:
-            // Remaining methods:
-            //  -pm0-/-pm1-/-pm2- (PMarc): real but extremely rare; decoder TODO.
-            //  -lh2-/-lh3-: never finalised — NO reference implementation exists
+            // The only methods not handled — neither is decodable from the header:
+            //  -lh2-/-lh3-: never finalised; NO reference implementation exists
             //    (even lhasa does not decode them).
-            //  Note: LHARK writes "-lh7-" for its OWN incompatible algorithm
-            //    (lhasa calls it -lk7-); it cannot be distinguished from standard
-            //    -lh7- by the header, so those specific archives can't auto-decode
-            //    (the reference has the same limitation).
+            //  LHARK's "-lh7-": LHARK writes -lh7- for its OWN incompatible
+            //    algorithm (lhasa calls it -lk7-); indistinguishable from standard
+            //    -lh7- by the header, so it can't auto-decode (reference limitation).
             throw LHAError.unsupportedMethod(m.method)
         }
     }
