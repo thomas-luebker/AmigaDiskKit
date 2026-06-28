@@ -69,6 +69,10 @@ public struct LHAArchive {
         case "-lh1-":
             var lh1 = LH1Decoder(data: compressed, originalSize: m.originalSize)
             return try lh1.decode()
+        case "-lzs-":
+            return try LArcDecoder.decodeLZS(data: compressed, originalSize: m.originalSize)
+        case "-lz5-":
+            return try LArcDecoder.decodeLZ5(data: compressed, originalSize: m.originalSize)
         case "-lh4-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 12, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
