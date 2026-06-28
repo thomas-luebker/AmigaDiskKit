@@ -351,7 +351,7 @@ public final class PFS3Volume {
         try flush()
     }
 
-    public func copyFromHost(hostURL: URL, amigaPath: String) throws {
+    public func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool = false) throws {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: hostURL.path, isDirectory: &isDir) else {
             throw AmigaDiskError.pathNotFound(path: hostURL.path)
@@ -367,10 +367,12 @@ public final class PFS3Volume {
             try makeDirectory(path: amigaPath)
             for child in try FileManager.default.contentsOfDirectory(at: hostURL,
                                                                      includingPropertiesForKeys: nil) {
+                // .uaem sidecars carry protection for sibling files; never copy them.
+                if applyUaeMetadata && child.pathExtension == UaeMetafile.fileExtension { continue }
                 let target = amigaPath.isEmpty ? child.lastPathComponent
                                                : "\(amigaPath)/\(child.lastPathComponent)"
                 do {
-                    try copyFromHost(hostURL: child, amigaPath: target)
+                    try copyFromHost(hostURL: child, amigaPath: target, applyUaeMetadata: applyUaeMetadata)
                 } catch {
                     // Skip items that can't be copied (unreadable, file too
                     // large, disk full) and keep going — same per-item
@@ -380,11 +382,18 @@ public final class PFS3Volume {
             }
         } else {
             let data = try Data(contentsOf: hostURL)
-            // AmigaOS protection: low nibble RWED active-low (0 = allowed);
-            // mirror the FFS engine's mapping of the host execute bit to 's',
-            // but never mark binaries as scripts (see isBinaryLoadFile).
-            let executable = FileManager.default.isExecutableFile(atPath: hostURL.path)
-            let protection: UInt8 = executable && !isBinaryLoadFile(data) ? 0x40 : 0
+            // A .uaem sidecar (when --uaemetadata is in effect) gives the exact
+            // Amiga protection from the source (low byte → PFS3 protection byte);
+            // otherwise map the host execute bit to the script bit. AmigaOS
+            // protection: low nibble RWED active-low (0 = allowed). Never mark
+            // binaries as scripts (see isBinaryLoadFile).
+            let protection: UInt8
+            if applyUaeMetadata, let sidecar = uaeSidecarProtection(for: hostURL) {
+                protection = UInt8(sidecar & 0xFF)
+            } else {
+                let executable = FileManager.default.isExecutableFile(atPath: hostURL.path)
+                protection = executable && !isBinaryLoadFile(data) ? 0x40 : 0
+            }
             try writeFile(path: amigaPath, data: data, protection: protection)
         }
     }

@@ -10,6 +10,10 @@ public struct PartitionSpec {
     public let bootPriority: Int32
     /// Filesystem granularity: 1 = 512-byte blocks, 2 = 1024, 4 = 2048.
     public let sectorsPerFSBlock: UInt32
+    /// RDB DosEnvVec de_MaxTransfer (Classic --max-transfer). Default = Amiga stock.
+    public let maxTransfer: UInt32
+    /// RDB DosEnvVec de_Mask (Classic --mask). Default = Amiga stock.
+    public let mask: UInt32
 
     public init(
         name: String,
@@ -17,7 +21,9 @@ public struct PartitionSpec {
         sizeCylinders: UInt32 = 0,
         isBootable: Bool = false,
         bootPriority: Int32 = 0,
-        sectorsPerFSBlock: UInt32 = 1
+        sectorsPerFSBlock: UInt32 = 1,
+        maxTransfer: UInt32 = 0x0001FE00,
+        mask: UInt32 = 0x7FFFFFFE
     ) {
         self.name = name
         self.dosType = dosType
@@ -25,6 +31,8 @@ public struct PartitionSpec {
         self.isBootable = isBootable
         self.bootPriority = bootPriority
         self.sectorsPerFSBlock = sectorsPerFSBlock
+        self.maxTransfer = maxTransfer
+        self.mask = mask
     }
 }
 
@@ -149,7 +157,8 @@ public enum DiskBuilder {
                 lowCyl: lowCyl, highCyl: highCyl,
                 geometry: geometry,
                 isBootable: spec.isBootable, bootPriority: spec.bootPriority,
-                sectorsPerFSBlock: spec.sectorsPerFSBlock
+                sectorsPerFSBlock: spec.sectorsPerFSBlock,
+                maxTransfer: spec.maxTransfer, mask: spec.mask
             )
             let blockData = part.serialize(next: nextPartLBA)
             try device.writeBlock(blockData, at: sliceStartLBA + Int64(partLBAs[i]))

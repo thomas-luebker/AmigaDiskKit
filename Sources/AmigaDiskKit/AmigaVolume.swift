@@ -56,7 +56,10 @@ public protocol AmigaVolumeOperations: AnyObject {
     func listEntries(path: String) throws -> [AmigaVolumeEntry]
     func listRecursive(path: String) throws -> [String]
     func makeDirectory(path: String) throws
-    func copyFromHost(hostURL: URL, amigaPath: String) throws
+    /// Copy a host file/tree into the partition. When `applyUaeMetadata` is set,
+    /// a `<src>.uaem` sidecar (if present) supplies the Amiga protection bits
+    /// instead of the POSIX-derived default; `*.uaem` files are not copied.
+    func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool) throws
     func extractToHost(amigaPath: String, hostURL: URL) throws
     func delete(path: String) throws
     func flush() throws

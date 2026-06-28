@@ -33,6 +33,26 @@ final class RDBWriterTests: XCTestCase {
         XCTAssertEqual(geo.rdbBlockHi, 2015)  // 2*1008 - 1
     }
 
+    // MaxTransfer/Mask (Classic --max-transfer/--mask). Default = Amiga stock;
+    // a custom PartitionSpec value must land in the PART block at +0xB4/+0xB8.
+    func testPartitionMaxTransferMaskDefaultAndCustom() throws {
+        func partBlock(_ spec: PartitionSpec) throws -> Data {
+            let url = tmpDir.appendingPathComponent("\(UUID().uuidString).hdf")
+            try DiskBuilder.build(url: url, sizeBytes: 100 * 1024 * 1024,
+                                  layout: .pureRDB(partitions: [spec]))
+            let data = try Data(contentsOf: url)
+            return data.subdata(in: (3 * 512)..<(3 * 512 + 512))  // PART @ slice LBA 3
+        }
+        let def = try partBlock(PartitionSpec(name: "DH0", dosType: KnownDosType.dos3))
+        XCTAssertEqual(def.readBE32(at: 0xB4), 0x0001_FE00)
+        XCTAssertEqual(def.readBE32(at: 0xB8), 0x7FFF_FFFE)
+
+        let custom = try partBlock(PartitionSpec(name: "DH0", dosType: KnownDosType.dos3,
+                                                 maxTransfer: 0x0001_0000, mask: 0xFFFF_FFFE))
+        XCTAssertEqual(custom.readBE32(at: 0xB4), 0x0001_0000)
+        XCTAssertEqual(custom.readBE32(at: 0xB8), 0xFFFF_FFFE)
+    }
+
     func testDiskGeometryTooSmall() {
         // 2 cylinders would be rejected (minimum 3)
         let twoMiB: Int64 = 2 * 1008 * 512  // exactly 2 cylinders

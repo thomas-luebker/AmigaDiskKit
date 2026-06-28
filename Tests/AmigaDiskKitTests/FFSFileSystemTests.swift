@@ -107,6 +107,38 @@ final class FFSFileSystemTests: XCTestCase {
         XCTAssertEqual(read, content)
     }
 
+    /// Regression: on an OFS volume (DOS\0), raw file data whose block begins
+    /// with the longword 0x00000008 (T_DATA) must NOT be mistaken for an OFS data
+    /// block and have 24 bytes stripped. This false positive corrupted
+    /// DEVS/scsi.device (its 8th block starts 0x00000008) and broke LoadModule
+    /// ROMUPDATE on real sub-V47 hardware. assembleFileData now also validates the
+    /// OFS header's seq_num + data_size, so the false positive reads through raw.
+    /// (The Modules ADF is DOS\1, now correctly classified FFS so it never takes
+    /// the OFS path at all — this test keeps coverage of the seq_num guard via an
+    /// actually-OFS-typed volume.)
+    func testReadFile_ffsBlockStartingWithT_DATA_notStrippedAsOFS() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos0)
+        // First block begins 0x00000008 but the following longwords are NOT a
+        // valid OFS header (seq_num would be 0xFFFFFFFF, data_size huge), and the
+        // file spans several blocks so a stripped block shifts everything after.
+        var content = Data([0x00, 0x00, 0x00, 0x08, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78])
+        content.append(Data((0 ..< 4096).map { UInt8($0 & 0xFF) }))
+        // Also start a later block boundary with 0x00000008 to mimic scsi.device.
+        let blkSize = 512
+        if content.count > blkSize {
+            content.replaceSubrange((blkSize) ..< (blkSize + 4),
+                                    with: [0x00, 0x00, 0x00, 0x08])
+        }
+
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "scsi.device", data: content, overwrite: true)
+        try fs.flush()
+
+        let read = try openFS(imgURL: imgURL).readFile(path: "scsi.device")
+        XCTAssertEqual(read, content, "FFS data block starting 0x00000008 was corrupted (OFS false positive)")
+    }
+
     func testWriteAndReadFile_emptyFile() throws {
         let (imgURL, _, _) = try makeFormattedImage()
         let fs = try openFS(imgURL: imgURL)

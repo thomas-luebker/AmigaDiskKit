@@ -79,7 +79,9 @@ public struct PartitionBlock {
         geometry: DiskGeometry,
         isBootable: Bool = false,
         bootPriority: Int32 = 0,
-        sectorsPerFSBlock: UInt32 = 1
+        sectorsPerFSBlock: UInt32 = 1,
+        maxTransfer: UInt32 = 0x0001FE00,
+        mask: UInt32 = 0x7FFFFFFE
     ) {
         driveName          = name
         self.dosType       = dosType
@@ -101,8 +103,8 @@ public struct PartitionBlock {
         interleave         = 0
         numBuffer          = 30
         bufMemType         = 0
-        maxTransfer        = 0x0001FE00
-        mask               = 0x7FFFFFFE
+        self.maxTransfer   = maxTransfer
+        self.mask          = mask
         // Derived
         blockSize          = sizeBlock * 4
         fileSystemBlockSize = sectors * blockSize
@@ -189,22 +191,28 @@ public struct PartitionBlock {
 }
 
 public struct KnownDosType {
+    // AmigaDOS dostype low byte: 0=OFS, 1=FFS, 2=OFS+INTL, 3=FFS+INTL,
+    // 4=OFS+DirCache, 5=FFS+DirCache, 6/7=OS3.2 long-filename (LNFS, FFS2).
     public static let dos0: UInt32 = 0x444F5300  // DOS\0 — OFS (no-intl)
-    public static let dos1: UInt32 = 0x444F5301  // DOS\1 — OFS+INTL
-    public static let dos2: UInt32 = 0x444F5302  // DOS\2 — FFS (no-intl, rare)
-    public static let dos3: UInt32 = 0x444F5303  // DOS\3 — FFS
-    public static let dos5: UInt32 = 0x444F5305  // DOS\5 — FFS+INTL
-    public static let dos6: UInt32 = 0x444F5306  // DOS\6 — FFS2 long filenames
+    public static let dos1: UInt32 = 0x444F5301  // DOS\1 — FFS (no-intl)
+    public static let dos2: UInt32 = 0x444F5302  // DOS\2 — OFS+INTL
+    public static let dos3: UInt32 = 0x444F5303  // DOS\3 — FFS+INTL
+    public static let dos5: UInt32 = 0x444F5305  // DOS\5 — FFS+DirCache
+    public static let dos6: UInt32 = 0x444F5306  // DOS\6 — FFS2 long filenames (LNFS)
     public static let dos7: UInt32 = 0x444F5307  // DOS\7 — FFS2 long filenames + INTL
 
     public static let pds3: UInt32 = 0x50445303  // PDS\3 — PFS3
 
+    // Correct AmigaDOS taxonomy (was: dos1 wrongly OFS, dos2 wrongly FFS — which
+    // made the FFS WB3.2 Modules ADF (DOS\1) get OFS data-block handling). Only
+    // assembleFileData's OFS-header stripping branches on this; every other caller
+    // uses the isOFS||isFFS union, so the fix is behaviour-neutral there.
     public static func isOFS(_ dosType: UInt32) -> Bool {
-        dosType == dos0 || dosType == dos1
+        dosType == dos0 || dosType == dos2
     }
 
     public static func isFFS(_ dosType: UInt32) -> Bool {
-        dosType == dos2 || dosType == dos3 || dosType == dos5 || dosType == dos6 || dosType == dos7
+        dosType == dos1 || dosType == dos3 || dosType == dos5 || dosType == dos6 || dosType == dos7
     }
 
     /// DOS\6 / DOS\7 — FFS2 long-filename mode (LNFS). Directory and file

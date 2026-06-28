@@ -215,7 +215,7 @@ public final class FFSFileSystem {
     /// If the host item is a directory, its contents are placed inside `amigaPath`.
     /// Files with the macOS executable bit set are written with Amiga script protection
     /// bit 0x40 so AmigaOS `Execute` can run them as scripts.
-    public func copyFromHost(hostURL: URL, amigaPath: String) throws {
+    public func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool = false) throws {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: hostURL.path, isDirectory: &isDir) else {
@@ -234,11 +234,13 @@ public final class FFSFileSystem {
                 at: hostURL, includingPropertiesForKeys: nil
             ).sorted { $0.lastPathComponent < $1.lastPathComponent }
             for item in contents {
+                // .uaem sidecars carry protection for sibling files; never copy them.
+                if applyUaeMetadata && item.pathExtension == UaeMetafile.fileExtension { continue }
                 let dest = amigaPath.isEmpty
                     ? item.lastPathComponent
                     : "\(amigaPath)/\(item.lastPathComponent)"
                 do {
-                    try copyFromHost(hostURL: item, amigaPath: dest)
+                    try copyFromHost(hostURL: item, amigaPath: dest, applyUaeMetadata: applyUaeMetadata)
                 } catch {
                     // Skip items that can't be accessed or named on FFS
                     // (e.g. locale dirs with non-ASCII names and Latin-1 byte sequences
@@ -248,11 +250,18 @@ public final class FFSFileSystem {
             }
         } else {
             let data = try Data(contentsOf: hostURL)
-            let attrs = try? fm.attributesOfItem(atPath: hostURL.path)
-            let posix = (attrs?[.posixPermissions] as? Int) ?? 0
-            // Script bit only for executable files that aren't binaries —
-            // see isBinaryLoadFile for why foreign binaries must not get it.
-            let protection: UInt32 = (posix & 0o111) != 0 && !isBinaryLoadFile(data) ? 0x40 : 0
+            // A .uaem sidecar (when --uaemetadata is in effect) gives the exact
+            // Amiga protection from the source; otherwise fall back to mapping
+            // the host execute bit to the script bit. Never mark binaries as
+            // scripts — see isBinaryLoadFile.
+            let protection: UInt32
+            if applyUaeMetadata, let sidecar = uaeSidecarProtection(for: hostURL) {
+                protection = sidecar
+            } else {
+                let attrs = try? fm.attributesOfItem(atPath: hostURL.path)
+                let posix = (attrs?[.posixPermissions] as? Int) ?? 0
+                protection = (posix & 0o111) != 0 && !isBinaryLoadFile(data) ? 0x40 : 0
+            }
             try writeFile(path: amigaPath, data: data, overwrite: true, protection: protection)
         }
     }
@@ -720,15 +729,20 @@ public final class FFSFileSystem {
 
         var raw = Data()
         raw.reserveCapacity(allPtrs.count * fsBlockSize)
-        for ptr in allPtrs {
+        for (index, ptr) in allPtrs.enumerated() {
             let blk = try readFSBlock(ptr)
-            // Standard OFS data blocks start with T_DATA = 8. Some OFS disks (e.g. WB3.2
-            // ADFs labeled DOS\1) store raw data without the 24-byte OFS header — detect
-            // by checking the actual block type rather than trusting the boot-block DOS type.
-            if isOFS && blk.count >= 24 && blk.readBE32(at: 0) == 8 {
-                let dataSize = Int(blk.readBE32(at: 3 * 4))
-                let payloadEnd = Swift.min(24 + dataSize, blk.count)
-                if payloadEnd > 24 { raw.append(blk[24 ..< payloadEnd]) }
+            // OFS data blocks carry a 24-byte header: type(T_DATA=8), header_key,
+            // seq_num, data_size, next_data, checksum. Detect them robustly —
+            // checking ONLY block[0]==8 false-positives on raw FFS file data that
+            // happens to begin a block with the longword 0x00000008 (e.g.
+            // scsi.device's 8th block), which silently strips 24 bytes and
+            // corrupts the file from that point on. A genuine OFS data block also
+            // has seq_num == its 1-based position and data_size within the payload.
+            let looksOFS = isOFS && blk.count >= 24 && blk.readBE32(at: 0) == 8
+            let seq      = looksOFS ? Int(blk.readBE32(at: 2 * 4)) : 0
+            let dataSize = looksOFS ? Int(blk.readBE32(at: 3 * 4)) : 0
+            if looksOFS && seq == index + 1 && dataSize > 0 && dataSize <= blk.count - 24 {
+                raw.append(blk[(blk.startIndex + 24) ..< (blk.startIndex + 24 + dataSize)])
             } else {
                 raw.append(contentsOf: blk)
             }
