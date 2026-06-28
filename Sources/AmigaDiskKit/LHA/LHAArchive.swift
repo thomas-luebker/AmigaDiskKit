@@ -85,6 +85,11 @@ public struct LHAArchive {
         case "-lh7-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 16, maxMatch: 256, nc: 512, np: 17, pbit: 5).decode()
+        case "-lhx-":
+            // UNLHA32 extension: lh-family with a 2^20 dict (lh_new_decoder
+            // template: HISTORY_BITS=20, OFFSET_BITS=5, NUM_CODES=510 → np=21).
+            return try LHDecoder(data: compressed, originalSize: m.originalSize,
+                                 dictBits: 20, maxMatch: 256, nc: 510, np: 21, pbit: 5).decode()
         default:
             throw LHAError.unsupportedMethod(m.method)
         }
