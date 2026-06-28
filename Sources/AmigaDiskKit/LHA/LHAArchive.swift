@@ -222,11 +222,16 @@ public struct LHAArchive {
     private static func parseLevel2(data: Data, pos: Int) throws -> (LHAMember?, Int) {
         // Level 2: fixed 26-byte base header, all sizes LE16/LE32
         guard pos + 26 <= data.count else { return (nil, 0) }
-        let totalHeaderSize = Int(LE16(data, pos))
+        var totalHeaderSize = Int(LE16(data, pos))
         let method   = String(bytes: data[(pos+2)..<(pos+7)], encoding: .isoLatin1) ?? ""
         let compSize = Int(LE32(data, pos + 7))
         let origSize = Int(LE32(data, pos + 11))
         let crc      = LE16(data, pos + 21)
+        // LHA for OS-9/68k (OS-type 'K' at offset 23) writes a BROKEN level-2
+        // header: the length field is the remainder length, 2 bytes short. Detect
+        // and compensate (matches lhasa decode_level2_header), else dataStart is
+        // 2 bytes early → corruption/CRC fail across lh0/lh1/lh5/… on these.
+        if data[pos + 23] == 0x4B /* 'K' = OS9_68K */ { totalHeaderSize += 2 }
         // Extended headers start at pos+26
         var extPos   = pos + 26
         var name     = ""
