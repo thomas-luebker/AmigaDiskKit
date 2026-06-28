@@ -66,6 +66,9 @@ public struct LHAArchive {
             // Stored (no compression). NOTE: -lzs- is NOT stored — it is LArc
             // LZSS compression; routing it here silently corrupted lzs archives.
             return Data(compressed)
+        case "-lh1-":
+            var lh1 = LH1Decoder(data: compressed, originalSize: m.originalSize)
+            return try lh1.decode()
         case "-lh4-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 12, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
