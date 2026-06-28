@@ -62,8 +62,20 @@ public struct LHAArchive {
         // which would cause BitReader to crash on out-of-bounds access at index 0.
         let compressed = data.subdata(in: m.dataOffset ..< m.dataOffset + m.compressedSize)
         switch m.method {
-        case "-lh0-", "-lzs-":
+        case "-lh0-", "-lz4-", "-pm0-":
+            // Stored (no compression). NOTE: -lzs- is NOT stored — it is LArc
+            // LZSS compression; routing it here silently corrupted lzs archives.
             return Data(compressed)
+        case "-lh1-":
+            var lh1 = LH1Decoder(data: compressed, originalSize: m.originalSize)
+            return try lh1.decode()
+        case "-lzs-":
+            return try LArcDecoder.decodeLZS(data: compressed, originalSize: m.originalSize)
+        case "-lz5-":
+            return try LArcDecoder.decodeLZ5(data: compressed, originalSize: m.originalSize)
+        case "-lh4-":
+            return try LHDecoder(data: compressed, originalSize: m.originalSize,
+                                 dictBits: 12, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
         case "-lh5-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 13, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
@@ -73,7 +85,24 @@ public struct LHAArchive {
         case "-lh7-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 16, maxMatch: 256, nc: 512, np: 17, pbit: 5).decode()
+        case "-lhx-":
+            // UNLHA32 extension: lh-family with a 2^20 dict (lh_new_decoder
+            // template: HISTORY_BITS=20, OFFSET_BITS=5, NUM_CODES=510 → np=21).
+            return try LHDecoder(data: compressed, originalSize: m.originalSize,
+                                 dictBits: 20, maxMatch: 256, nc: 510, np: 21, pbit: 5).decode()
+        case "-pm1-":
+            var pm1 = PM1Decoder(data: compressed, originalSize: m.originalSize)
+            return try pm1.decode()
+        case "-pm2-":
+            var pm2 = PM2Decoder(data: compressed, originalSize: m.originalSize)
+            return try pm2.decode()
         default:
+            // The only methods not handled — neither is decodable from the header:
+            //  -lh2-/-lh3-: never finalised; NO reference implementation exists
+            //    (even lhasa does not decode them).
+            //  LHARK's "-lh7-": LHARK writes -lh7- for its OWN incompatible
+            //    algorithm (lhasa calls it -lk7-); indistinguishable from standard
+            //    -lh7- by the header, so it can't auto-decode (reference limitation).
             throw LHAError.unsupportedMethod(m.method)
         }
     }
@@ -205,11 +234,16 @@ public struct LHAArchive {
     private static func parseLevel2(data: Data, pos: Int) throws -> (LHAMember?, Int) {
         // Level 2: fixed 26-byte base header, all sizes LE16/LE32
         guard pos + 26 <= data.count else { return (nil, 0) }
-        let totalHeaderSize = Int(LE16(data, pos))
+        var totalHeaderSize = Int(LE16(data, pos))
         let method   = String(bytes: data[(pos+2)..<(pos+7)], encoding: .isoLatin1) ?? ""
         let compSize = Int(LE32(data, pos + 7))
         let origSize = Int(LE32(data, pos + 11))
         let crc      = LE16(data, pos + 21)
+        // LHA for OS-9/68k (OS-type 'K' at offset 23) writes a BROKEN level-2
+        // header: the length field is the remainder length, 2 bytes short. Detect
+        // and compensate (matches lhasa decode_level2_header), else dataStart is
+        // 2 bytes early → corruption/CRC fail across lh0/lh1/lh5/… on these.
+        if data[pos + 23] == 0x4B /* 'K' = OS9_68K */ { totalHeaderSize += 2 }
         // Extended headers start at pos+26
         var extPos   = pos + 26
         var name     = ""
