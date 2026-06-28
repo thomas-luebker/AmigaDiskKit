@@ -62,8 +62,13 @@ public struct LHAArchive {
         // which would cause BitReader to crash on out-of-bounds access at index 0.
         let compressed = data.subdata(in: m.dataOffset ..< m.dataOffset + m.compressedSize)
         switch m.method {
-        case "-lh0-", "-lzs-":
+        case "-lh0-", "-lz4-":
+            // Stored (no compression). NOTE: -lzs- is NOT stored — it is LArc
+            // LZSS compression; routing it here silently corrupted lzs archives.
             return Data(compressed)
+        case "-lh4-":
+            return try LHDecoder(data: compressed, originalSize: m.originalSize,
+                                 dictBits: 12, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
         case "-lh5-":
             return try LHDecoder(data: compressed, originalSize: m.originalSize,
                                  dictBits: 13, maxMatch: 256, nc: 510, np: 14, pbit: 4).decode()
