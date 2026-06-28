@@ -60,7 +60,11 @@ struct LHDecoder {
                 blockRemain = Int(try reader.readBits(16))
                 if blockRemain == 0 { break }
                 (cTree, cTS) = try readTree(reader: &reader, n: nc, tableSize: 12, bitCount: Self.CBIT)
-                (pTree, pTS) = try readTree(reader: &reader, n: np, tableSize: dictBits, bitCount: pbit)
+                // P-tree flat-lookup width is capped at 16 (buildTable's limit);
+                // for lhx (dictBits=20) this caps at 16 — a no-op for lh4–7
+                // (dictBits ≤ 16), and buildTable still extends to the real max
+                // code length as needed.
+                (pTree, pTS) = try readTree(reader: &reader, n: np, tableSize: Swift.min(dictBits, 16), bitCount: pbit)
             }
             blockRemain -= 1
 
