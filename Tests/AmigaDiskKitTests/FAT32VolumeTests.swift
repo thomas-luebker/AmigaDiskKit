@@ -277,4 +277,72 @@ final class FAT32VolumeTests: XCTestCase {
         let names = try vol.listDirectory("/transfer").map(\.name).sorted()
         XCTAssertEqual(names, ["readme.txt"])
     }
+
+    // MARK: - rename (in place)
+
+    func testRenameFilePreservesContent() throws {
+        let original = "fat32 rename payload"
+        let src = tmpFile(content: original)
+        defer { try? FileManager.default.removeItem(at: src) }
+        try vol.copyFromHost(source: src, destination: "/config.txt")
+
+        try vol.rename("/config.txt", to: "config.txt.bak")
+
+        // Reopen from disk to prove the rename persisted.
+        let vol2 = try FAT32Volume(imageURL: imageURL)
+        XCTAssertFalse(try vol2.exists("/config.txt"))
+        XCTAssertTrue(try vol2.exists("/config.txt.bak"))
+        let dst = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("fat32-rename-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: dst) }
+        try vol2.copyToHost(source: "/config.txt.bak", destination: dst)
+        XCTAssertEqual(try String(contentsOf: dst, encoding: .utf8), original)
+    }
+
+    func testRenameDirectoryKeepsChildren() throws {
+        try vol.makeDirectory("/Old")
+        let src = tmpFile(content: "child")
+        defer { try? FileManager.default.removeItem(at: src) }
+        try vol.copyFromHost(source: src, destination: "/Old/file.bin")
+
+        try vol.rename("/Old", to: "New")
+
+        let vol2 = try FAT32Volume(imageURL: imageURL)
+        XCTAssertTrue(try vol2.exists("/New/file.bin"))
+        XCTAssertFalse(try vol2.exists("/Old"))
+    }
+
+    func testRenameLongFilename() throws {
+        let src = tmpFile(content: "lfn")
+        defer { try? FileManager.default.removeItem(at: src) }
+        try vol.copyFromHost(source: src, destination: "/a.txt")
+
+        let longName = "a-considerably-longer-fat32-name.txt"
+        try vol.rename("/a.txt", to: longName)
+
+        let vol2 = try FAT32Volume(imageURL: imageURL)
+        XCTAssertTrue(try vol2.exists("/\(longName)"))
+        XCTAssertFalse(try vol2.exists("/a.txt"))
+    }
+
+    func testRenameCollisionThrows() throws {
+        try vol.copyFromHost(source: tmpFile(content: "1"), destination: "/a.txt")
+        try vol.copyFromHost(source: tmpFile(content: "2"), destination: "/b.txt")
+
+        XCTAssertThrowsError(try vol.rename("/a.txt", to: "b.txt")) { err in
+            guard case AmigaDiskError.entryExists = err else {
+                return XCTFail("expected entryExists, got \(err)")
+            }
+        }
+        XCTAssertTrue(try vol.exists("/a.txt"))
+        XCTAssertTrue(try vol.exists("/b.txt"))
+    }
+
+    func testRenameMissingThrows() throws {
+        XCTAssertThrowsError(try vol.rename("/nope.txt", to: "x.txt")) { err in
+            guard case AmigaDiskError.pathNotFound = err else {
+                return XCTFail("expected pathNotFound, got \(err)")
+            }
+        }
+    }
 }

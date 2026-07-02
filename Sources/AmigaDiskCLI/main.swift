@@ -506,6 +506,15 @@ private func fsFsCommand(subcommand: String, fsArgs: [String]) throws {
         try fs.flush()
         print("disk fs delete: '\(positionals[2])'")
 
+    case "rename":
+        guard positionals.count >= 4 else {
+            fputs("Usage: AmigaDiskCLI disk fs rename <image> <partition> <amiga-path> <new-name>\n", stderr); exit(1)
+        }
+        let fs = try openAmigaVolume(imageURL: imageURL, partitionName: partName, sliceStartLBA: sliceLBA)
+        try fs.rename(path: positionals[2], to: positionals[3])
+        try fs.flush()
+        print("disk fs rename: '\(positionals[2])' → '\(positionals[3])'")
+
     default:
         fputs("disk fs: unknown subcommand '\(subcommand)'\n", stderr); exit(1)
     }
@@ -599,6 +608,13 @@ private func diskFatCommand(subcommand: String, fatArgs: [String]) throws {
         }
         let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
         try vol.delete(positionals[1])
+
+    case "rename":
+        guard positionals.count >= 3 else {
+            fputs("Usage: AmigaDiskCLI disk fat rename <image> <fat-path> <new-name>\n", stderr); exit(1)
+        }
+        let vol = try FAT32Volume(imageURL: imageURL, mbrIndex: mbrIndex)
+        try vol.rename(positionals[1], to: positionals[2])
 
     default:
         fputs("disk fat: unknown subcommand '\(subcommand)'\n", stderr); exit(1)

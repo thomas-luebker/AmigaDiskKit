@@ -653,6 +653,63 @@ public final class FFSFileSystem {
         try deleteEntry(name: name, inDir: parentFSBlock)
     }
 
+    // MARK: - Rename (in place)
+
+    /// Rename an entry in place within its own directory. `newName` is a leaf
+    /// name (no `/` or `:`), not a path — this does not move the entry.
+    ///
+    /// FFS stores directory entries in a per-name hash chain, so a rename can
+    /// change which hash slot the entry belongs to. We therefore unlink the entry
+    /// under its old name, rewrite the header block's name (BSTR) + checksum, then
+    /// relink it under the new name (which recomputes the correct slot). A
+    /// case-only rename (e.g. `FOO`→`foo`) hashes to the same slot and is allowed.
+    public func rename(path: String, to newName: String) throws {
+        let comps = pathComponents(path)
+        guard let oldName = comps.last else {
+            throw AmigaDiskError.invalidName(name: path, reason: "cannot rename the volume root")
+        }
+        guard !newName.isEmpty else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name is empty")
+        }
+        guard !newName.contains("/"), !newName.contains(":") else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name must not contain '/' or ':'")
+        }
+        let maxLen = isLongNameFS ? 109 : 30
+        guard newName.amigaLatin1Bytes.count <= maxLen else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name exceeds \(maxLen) characters for this filesystem")
+        }
+
+        let parentPath    = comps.dropLast().joined(separator: "/")
+        let parentFSBlock  = try resolveDirPath(parentPath)
+
+        guard let entryBlock = try lookup(name: oldName, inDir: parentFSBlock) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        // Reject a collision with a *different* existing entry (case-insensitive).
+        // Renaming an entry to a different case of its own name is allowed.
+        if let existing = try lookup(name: newName, inDir: parentFSBlock), existing != entryBlock {
+            throw AmigaDiskError.entryExists(path: comps.dropLast().joined(separator: "/") + "/" + newName)
+        }
+
+        // Unlink under the old name (splices the entry out of its hash chain).
+        try removeEntryFromDir(entryFSBlock: entryBlock, name: oldName, inDir: parentFSBlock)
+
+        // Rewrite the header block's name field and clear its stale hash link.
+        var entryData = try readFSBlock(entryBlock)
+        let bl = entryData.count / 4
+        entryData.writeBE32(UInt32(0), at: (bl - 4) * 4)   // hash_chain = 0 before relink
+        if isLongNameFS {
+            entryData.writeBSTR(newName, at: (bl - 46) * 4, maxLength: 110)
+        } else {
+            entryData.writeBSTR(newName, at: (bl - 20) * 4, maxLength: 31)
+        }
+        embedFFSBlockChecksum(into: &entryData)
+        try writeFSBlock(entryBlock, entryData)
+
+        // Relink under the new name (recomputes the correct hash slot).
+        try addEntryToDir(entryFSBlock: entryBlock, name: newName, inDir: parentFSBlock)
+    }
+
     // MARK: - File write
 
     private func writeFileInternal(name: String, fileData: Data, parentFSBlock: UInt32, protection: UInt32 = 0) throws {

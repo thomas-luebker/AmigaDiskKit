@@ -116,6 +116,50 @@ public final class FAT32Volume {
         try removeEntry(name: name, from: parentCluster)
     }
 
+    /// Rename an entry in place within its own directory. `newName` is a leaf
+    /// name (no `/`, `\` or `:`), not a path — this does not move the entry.
+    ///
+    /// A FAT32 entry's data is its cluster chain, referenced by the SFN's
+    /// first-cluster field; the name lives only in the LFN/SFN records. So a
+    /// rename removes the old LFN+SFN records (`removeEntry` marks them 0xE5 but
+    /// does NOT free the cluster chain) and writes fresh records for the new name
+    /// reusing the same first cluster, size, attributes and timestamp — preserving
+    /// the file/directory contents. A directory's `.`/`..` entries reference
+    /// clusters, not the parent name, so they need no update.
+    public func rename(_ path: String, to newName: String) throws {
+        guard !newName.isEmpty else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name is empty")
+        }
+        guard !newName.contains("/"), !newName.contains("\\"), !newName.contains(":") else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name must not contain '/', '\\' or ':'")
+        }
+
+        let components = normalize(path)
+        guard let oldName = components.last else {
+            throw AmigaDiskError.invalidName(name: path, reason: "cannot rename the volume root")
+        }
+        let parentComponents = Array(components.dropLast())
+        let parentCluster = try resolveDirectoryCluster(pathComponents: parentComponents)
+        let entries = try readDirectory(cluster: parentCluster)
+
+        guard let entry = entries.first(where: { $0.name.lowercased() == oldName.lowercased() }) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        // Reject a collision with a *different* existing entry (case-insensitive);
+        // a case-only rename of the entry onto itself is allowed.
+        if let clash = entries.first(where: { $0.name.lowercased() == newName.lowercased() }),
+           clash.name.lowercased() != oldName.lowercased() {
+            throw AmigaDiskError.entryExists(path: newName)
+        }
+
+        try removeEntry(name: oldName, from: parentCluster)
+        try appendEntries(
+            FAT32Entry.serialize(name: newName, attributes: entry.attributes,
+                                 firstCluster: entry.firstCluster, fileSize: entry.fileSize,
+                                 date: entry.writeDate, time: entry.writeTime),
+            toDirectory: parentCluster)
+    }
+
     // MARK: - Path helpers
 
     private func normalize(_ path: String) -> [String] {

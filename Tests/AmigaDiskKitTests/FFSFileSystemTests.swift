@@ -564,4 +564,99 @@ final class FFSFileSystemTests: XCTestCase {
         let names = try fs2.listDirectory().map(\.name)
         XCTAssertEqual(names, [nfcName])
     }
+
+    // MARK: - rename (in place)
+
+    func testRename_filePreservesContent() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        let content = Data("hello amiga".utf8)
+        try fs.makeDirectory(path: "S")
+        try fs.writeFile(path: "S/startup-sequence", data: content)
+        try fs.flush()
+
+        try fs.rename(path: "S/startup-sequence", to: "startup-sequence.bak")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let names = try fs2.listDirectory(path: "S").map(\.name)
+        XCTAssertEqual(names, ["startup-sequence.bak"])
+        XCTAssertEqual(try fs2.readFile(path: "S/startup-sequence.bak"), content)
+    }
+
+    func testRename_directoryKeepsChildren() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        let content = Data("payload".utf8)
+        try fs.makeDirectory(path: "Old")
+        try fs.writeFile(path: "Old/file.txt", data: content)
+        try fs.flush()
+
+        try fs.rename(path: "Old", to: "New")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.listDirectory().map(\.name), ["New"])
+        XCTAssertEqual(try fs2.listDirectory(path: "New").map(\.name), ["file.txt"])
+        XCTAssertEqual(try fs2.readFile(path: "New/file.txt"), content)
+    }
+
+    func testRename_caseOnly() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "readme", data: Data([1, 2, 3]))
+        try fs.flush()
+
+        try fs.rename(path: "readme", to: "ReadMe")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.listDirectory().map(\.name), ["ReadMe"])
+        XCTAssertEqual(try fs2.readFile(path: "ReadMe"), Data([1, 2, 3]))
+    }
+
+    func testRename_collisionThrows() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "a.txt", data: Data([1]))
+        try fs.writeFile(path: "b.txt", data: Data([2]))
+        try fs.flush()
+
+        XCTAssertThrowsError(try fs.rename(path: "a.txt", to: "b.txt")) { err in
+            guard case AmigaDiskError.entryExists = err else {
+                return XCTFail("expected entryExists, got \(err)")
+            }
+        }
+        // Both files must survive the rejected rename.
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(Set(try fs2.listDirectory().map(\.name)), ["a.txt", "b.txt"])
+    }
+
+    func testRename_missingThrows() throws {
+        let (imgURL, _, _) = try makeFormattedImage()
+        let fs = try openFS(imgURL: imgURL)
+        XCTAssertThrowsError(try fs.rename(path: "nope.txt", to: "x.txt")) { err in
+            guard case AmigaDiskError.pathNotFound = err else {
+                return XCTFail("expected pathNotFound, got \(err)")
+            }
+        }
+    }
+
+    func testRename_longNameFS() throws {
+        // DOS\7 = long-name FFS: a >30-char name must round-trip.
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos7)
+        let fs = try openFS(imgURL: imgURL)
+        let content = Data("lnfs".utf8)
+        try fs.writeFile(path: "short.txt", data: content)
+        try fs.flush()
+
+        let longName = "a-considerably-longer-file-name-than-thirty.txt"
+        XCTAssertGreaterThan(longName.count, 30)
+        try fs.rename(path: "short.txt", to: longName)
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.listDirectory().map(\.name), [longName])
+        XCTAssertEqual(try fs2.readFile(path: longName), content)
+    }
 }

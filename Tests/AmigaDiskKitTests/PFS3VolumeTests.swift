@@ -243,4 +243,68 @@ final class PFS3VolumeTests: XCTestCase {
         XCTAssertEqual(try volume2.listDirectory(path: "Transfer").map(\.name), ["readme.txt"])
         XCTAssertEqual(try volume2.readFile(path: "Transfer/readme.txt"), Data("hello\n".utf8))
     }
+
+    // MARK: - rename (in place)
+
+    func testRenameFilePreservesContent() throws {
+        let url = try makeVolumeImage()
+        let volume = try open(url)
+        let payload = Data("pfs3 rename".utf8)
+        try volume.makeDirectory(path: "S")
+        try volume.writeFile(path: "S/Startup-Sequence", data: payload)
+        try volume.rename(path: "S/Startup-Sequence", to: "Startup-Sequence.old")
+
+        let volume2 = try open(url)
+        XCTAssertEqual(try volume2.listDirectory(path: "S").map(\.name), ["Startup-Sequence.old"])
+        XCTAssertEqual(try volume2.readFile(path: "S/Startup-Sequence.old"), payload)
+    }
+
+    func testRenameDirectoryKeepsChildren() throws {
+        let url = try makeVolumeImage()
+        let volume = try open(url)
+        let payload = Data("child".utf8)
+        try volume.makeDirectory(path: "Old/Sub")
+        try volume.writeFile(path: "Old/Sub/file.txt", data: payload)
+        try volume.rename(path: "Old", to: "New")
+
+        let volume2 = try open(url)
+        XCTAssertEqual(try volume2.listDirectory(path: "").map(\.name), ["New"])
+        XCTAssertEqual(try volume2.readFile(path: "New/Sub/file.txt"), payload)
+    }
+
+    func testRenameCaseOnly() throws {
+        let url = try makeVolumeImage()
+        let volume = try open(url)
+        try volume.writeFile(path: "readme", data: Data([7, 8, 9]))
+        try volume.rename(path: "readme", to: "ReadMe")
+
+        let volume2 = try open(url)
+        XCTAssertEqual(try volume2.listDirectory(path: "").map(\.name), ["ReadMe"])
+        XCTAssertEqual(try volume2.readFile(path: "ReadMe"), Data([7, 8, 9]))
+    }
+
+    func testRenameCollisionThrows() throws {
+        let url = try makeVolumeImage()
+        let volume = try open(url)
+        try volume.writeFile(path: "a.txt", data: Data([1]))
+        try volume.writeFile(path: "b.txt", data: Data([2]))
+
+        XCTAssertThrowsError(try volume.rename(path: "a.txt", to: "b.txt")) { err in
+            guard case AmigaDiskError.entryExists = err else {
+                return XCTFail("expected entryExists, got \(err)")
+            }
+        }
+        let volume2 = try open(url)
+        XCTAssertEqual(Set(try volume2.listDirectory(path: "").map(\.name)), ["a.txt", "b.txt"])
+    }
+
+    func testRenameMissingThrows() throws {
+        let url = try makeVolumeImage()
+        let volume = try open(url)
+        XCTAssertThrowsError(try volume.rename(path: "nope", to: "x")) { err in
+            guard case AmigaDiskError.pathNotFound = err else {
+                return XCTFail("expected pathNotFound, got \(err)")
+            }
+        }
+    }
 }
