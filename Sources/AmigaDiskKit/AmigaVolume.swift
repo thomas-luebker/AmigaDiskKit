@@ -62,6 +62,9 @@ public protocol AmigaVolumeOperations: AnyObject {
     func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool) throws
     func extractToHost(amigaPath: String, hostURL: URL) throws
     func delete(path: String) throws
+    /// Rename an entry in place within its own directory. `newName` is a leaf
+    /// name (no path separators); the entry's contents are preserved.
+    func rename(path: String, to newName: String) throws
     func flush() throws
     func volumeInfo() throws -> AmigaVolumeInfo
 }

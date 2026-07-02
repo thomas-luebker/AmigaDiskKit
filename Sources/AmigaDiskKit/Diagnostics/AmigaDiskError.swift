@@ -22,6 +22,7 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
     case notADirectory(path: String)
     case notAFile(path: String)
     case entryExists(path: String)
+    case invalidName(name: String, reason: String)
     case unsupportedDosType(UInt32)
 
     // FAT32
@@ -72,6 +73,8 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
             return "not a file: \(path)"
         case .entryExists(let path):
             return "entry already exists: \(path)"
+        case .invalidName(let name, let reason):
+            return "invalid name '\(name)': \(reason)"
         case .unsupportedDosType(let dosType):
             return "unsupported DOS type: 0x\(String(dosType, radix: 16, uppercase: true))"
         case .partitionOffsetOverflow(let lowCyl, let blocksPerCylinder, let blockSize):

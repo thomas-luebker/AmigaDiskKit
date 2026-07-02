@@ -351,6 +351,47 @@ public final class PFS3Volume {
         try flush()
     }
 
+    /// Rename an entry in place within its own directory. `newName` is a leaf
+    /// name (no `/` or `:`), not a path — this does not move the entry.
+    ///
+    /// The file/directory data hangs off the entry's *anode*, not the directory
+    /// entry, so a rename must preserve the anode. We remove the old directory
+    /// entry (via `removeDirEntry`, which — unlike `deleteEntry` — does NOT free
+    /// the anode or its blocks) and re-add a copy carrying the same anode, type,
+    /// dates, protection, comment and extra fields under the new name. Re-adding
+    /// (rather than an in-place rewrite) is size-independent, so it works whether
+    /// the new name is longer or shorter than the old one.
+    public func rename(path: String, to newName: String) throws {
+        guard !newName.isEmpty else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name is empty")
+        }
+        guard !newName.contains("/"), !newName.contains(":") else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name must not contain '/' or ':'")
+        }
+        let maxLen = Int(g.fnsize) - 1
+        guard newName.amigaLatin1Bytes.count <= maxLen else {
+            throw AmigaDiskError.invalidName(name: newName, reason: "name exceeds \(maxLen) characters for this filesystem")
+        }
+
+        let (parentAnode, oldName) = try resolveParentAndName(path)
+        guard let found = try searchInDir(parentAnode, oldName) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        // Reject a collision with a *different* existing entry (case-insensitive).
+        // Renaming an entry to a different case of its own name is allowed
+        // (the anode identifies the entry uniquely).
+        if let existing = try searchInDir(parentAnode, newName),
+           existing.entry.anode != found.entry.anode {
+            throw AmigaDiskError.entryExists(path: newName)
+        }
+
+        var entry = found.entry
+        entry.name = newName
+        try removeDirEntry(found)
+        _ = try addDirectoryEntry(dirAnode: parentAnode, entry: entry)
+        try flush()
+    }
+
     public func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool = false) throws {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: hostURL.path, isDirectory: &isDir) else {
