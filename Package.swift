@@ -5,6 +5,7 @@ let package = Package(
     name: "AmigaDiskKit",
     platforms: [
         .macOS(.v13),
+        .iOS(.v17),
     ],
     products: [
         // Explicitly static: amiga-tools is copied standalone into the app's

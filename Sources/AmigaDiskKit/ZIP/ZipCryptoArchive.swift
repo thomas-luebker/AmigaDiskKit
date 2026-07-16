@@ -37,6 +37,15 @@ public struct ZipCryptoArchive {
         public let compressedSize: Int
         public let uncompressedSize: Int
         public let localHeaderOffset: Int
+        /// Central-directory "version made by" — high byte 3 = Unix host
+        /// (external attributes then carry the POSIX mode in the top 16 bits).
+        public let versionMadeBy: UInt16
+        public let externalAttributes: UInt32
+
+        /// POSIX mode bits when the entry was made on Unix, else nil.
+        public var unixMode: UInt16? {
+            (versionMadeBy >> 8) == 3 ? UInt16(externalAttributes >> 16) : nil
+        }
     }
 
     public let entries: [Entry]
@@ -60,6 +69,8 @@ public struct ZipCryptoArchive {
             let nameLen = Int(data.u16(p + 28))
             let extraLen = Int(data.u16(p + 30))
             let commentLen = Int(data.u16(p + 32))
+            let madeBy = data.u16(p + 4)
+            let extAttrs = data.u32(p + 38)
             let lho = Int(data.u32(p + 42))
             let name = String(decoding: data.subdata(in: (p + 46)..<(p + 46 + nameLen)), as: UTF8.self)
             entries.append(Entry(
@@ -70,7 +81,9 @@ public struct ZipCryptoArchive {
                 crc32: crc,
                 compressedSize: compSize,
                 uncompressedSize: uncompSize,
-                localHeaderOffset: lho))
+                localHeaderOffset: lho,
+                versionMadeBy: madeBy,
+                externalAttributes: extAttrs))
             p += 46 + nameLen + extraLen + commentLen
         }
         self.entries = entries
@@ -121,6 +134,48 @@ public struct ZipCryptoArchive {
             let dest = dir.appendingPathComponent(e.name)
             try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try extract(e, password: password).write(to: dest)
+            written += 1
+        }
+        return written
+    }
+
+    /// Extract an UNENCRYPTED archive at `zipURL` into `dir`, mirroring
+    /// `unzip -q -o`: overwrite existing files, create intermediate
+    /// directories, restore Unix exec bits and symlinks, refuse entries
+    /// that escape `dir`. Returns the number of files written. This is the
+    /// native replacement for the engine's /usr/bin/unzip exec sites
+    /// (iOS has no Process).
+    @discardableResult
+    public static func extractArchive(at zipURL: URL, to dir: URL) throws -> Int {
+        let archive = try ZipCryptoArchive(data: Data(contentsOf: zipURL, options: .mappedIfSafe))
+        let fm = FileManager.default
+        let root = dir.standardizedFileURL
+        var written = 0
+        for e in archive.entries {
+            // Path-traversal guard (unzip refuses these too).
+            let comps = e.name.split(separator: "/").map(String.init)
+            guard !comps.contains(".."), !e.name.hasPrefix("/") else { continue }
+            let dest = comps.reduce(root) { $0.appendingPathComponent($1) }
+            if e.isDirectory {
+                try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+                continue
+            }
+            try fm.createDirectory(at: dest.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            let bytes = try archive.extract(e, password: "")
+            if let mode = e.unixMode, (mode & 0xF000) == 0xA000 {
+                // Symlink: payload is the target path.
+                try? fm.removeItem(at: dest)
+                try fm.createSymbolicLink(atPath: dest.path,
+                                          withDestinationPath: String(decoding: bytes, as: UTF8.self))
+                continue
+            }
+            try? fm.removeItem(at: dest)      // -o: overwrite
+            try bytes.write(to: dest)
+            if let mode = e.unixMode, mode & 0o111 != 0 {
+                try? fm.setAttributes([.posixPermissions: Int(mode & 0o7777)],
+                                      ofItemAtPath: dest.path)
+            }
             written += 1
         }
         return written
