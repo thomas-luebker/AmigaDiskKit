@@ -392,6 +392,45 @@ public final class PFS3Volume {
         try flush()
     }
 
+    // MARK: - Metadata (protection / comment)
+
+    /// Set an existing entry's Amiga protection bits in place.
+    ///
+    /// PFS3 splits protection across the directory entry's `protection` byte
+    /// (the classic HSPARWED low byte) and the `prot` extra field (bytes 1–3),
+    /// which is exactly how `listEntries` recombines them. Like `rename`, the
+    /// update goes through remove + re-add of the SAME entry struct so the
+    /// anode — and with it the file's data — is preserved.
+    public func setProtection(path: String, protection: UInt32) throws {
+        let (parentAnode, name) = try resolveParentAndName(path)
+        guard let found = try searchInDir(parentAnode, name) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        var entry = found.entry
+        entry.protection = UInt8(protection & 0xFF)
+        entry.extraFields.prot = protection & 0xFFFF_FF00
+        try removeDirEntry(found)
+        _ = try addDirectoryEntry(dirAnode: parentAnode, entry: entry)
+        try flush()
+    }
+
+    /// Set an existing entry's file comment (PFS3 keeps it in the directory
+    /// entry; the volume's own limit applies).
+    public func setComment(path: String, comment: String) throws {
+        let (parentAnode, name) = try resolveParentAndName(path)
+        guard let found = try searchInDir(parentAnode, name) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        guard comment.amigaLatin1Bytes.count <= 79 else {
+            throw AmigaDiskError.invalidName(name: comment, reason: "comment exceeds 79 characters")
+        }
+        var entry = found.entry
+        entry.comment = comment
+        try removeDirEntry(found)
+        _ = try addDirectoryEntry(dirAnode: parentAnode, entry: entry)
+        try flush()
+    }
+
     public func copyFromHost(hostURL: URL, amigaPath: String, applyUaeMetadata: Bool = false) throws {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: hostURL.path, isDirectory: &isDir) else {

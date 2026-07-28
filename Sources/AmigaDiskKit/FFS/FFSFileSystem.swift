@@ -710,6 +710,58 @@ public final class FFSFileSystem {
         try addEntryToDir(entryFSBlock: entryBlock, name: newName, inDir: parentFSBlock)
     }
 
+    // MARK: - Metadata (protection / comment)
+
+    /// Set an existing entry's Amiga protection bits in place.
+    ///
+    /// Unlike `rename`, the name is untouched, so the entry keeps its hash slot
+    /// and no relinking is needed: patch `protect` in the header block, re-embed
+    /// the checksum, write it back. Note the RWED bits are ACTIVE LOW in the
+    /// on-disk longword (a set bit REVOKES the permission) — callers pass the
+    /// raw field exactly as `listEntries` reports it.
+    public func setProtection(path: String, protection: UInt32) throws {
+        let entryBlock = try resolveEntryBlock(path)
+        var data = try readFSBlock(entryBlock)
+        let bl = data.count / 4
+        data.writeBE32(protection, at: (bl - 48) * 4)
+        embedFFSBlockChecksum(into: &data)
+        try writeFSBlock(entryBlock, data)
+    }
+
+    /// Set an existing entry's file comment (max 79 characters).
+    ///
+    /// REFUSED on long-filename volumes (DOS\6/\7): LNFS reuses the comment
+    /// area for the long name, so there is no comment field to write — doing it
+    /// anyway would corrupt the entry's name.
+    public func setComment(path: String, comment: String) throws {
+        guard !isLongNameFS else {
+            throw AmigaDiskError.unsupportedOperation(
+                "this filesystem stores long names in the comment field, so it has no comment to edit")
+        }
+        guard comment.amigaLatin1Bytes.count <= 79 else {
+            throw AmigaDiskError.invalidName(name: comment, reason: "comment exceeds 79 characters")
+        }
+        let entryBlock = try resolveEntryBlock(path)
+        var data = try readFSBlock(entryBlock)
+        let bl = data.count / 4
+        data.writeBSTR(comment, at: (bl - 46) * 4, maxLength: 80)
+        embedFFSBlockChecksum(into: &data)
+        try writeFSBlock(entryBlock, data)
+    }
+
+    /// Resolve a path to the header block of the file OR directory it names.
+    private func resolveEntryBlock(_ path: String) throws -> UInt32 {
+        let comps = pathComponents(path)
+        guard let name = comps.last else {
+            throw AmigaDiskError.invalidName(name: path, reason: "the volume root has no entry header")
+        }
+        let parentFSBlock = try resolveDirPath(comps.dropLast().joined(separator: "/"))
+        guard let block = try lookup(name: name, inDir: parentFSBlock) else {
+            throw AmigaDiskError.pathNotFound(path: path)
+        }
+        return block
+    }
+
     // MARK: - File write
 
     private func writeFileInternal(name: String, fileData: Data, parentFSBlock: UInt32, protection: UInt32 = 0) throws {

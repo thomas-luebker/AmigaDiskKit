@@ -24,6 +24,9 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
     case entryExists(path: String)
     case invalidName(name: String, reason: String)
     case unsupportedDosType(UInt32)
+    /// The filesystem/backend cannot perform this operation (e.g. comments on a
+    /// long-filename volume, metadata edits on a read-only archive).
+    case unsupportedOperation(String)
 
     // FAT32
     case invalidFAT32Signature(found: UInt16)
@@ -77,6 +80,8 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
             return "invalid name '\(name)': \(reason)"
         case .unsupportedDosType(let dosType):
             return "unsupported DOS type: 0x\(String(dosType, radix: 16, uppercase: true))"
+        case .unsupportedOperation(let why):
+            return "unsupported operation: \(why)"
         case .partitionOffsetOverflow(let lowCyl, let blocksPerCylinder, let blockSize):
             return "partition start offset overflows Int64: lowCyl=\(lowCyl) blocksPerCylinder=\(blocksPerCylinder) blockSize=\(blockSize)"
         case .invalidGeometry(let reason):

@@ -67,6 +67,22 @@ public protocol AmigaVolumeOperations: AnyObject {
     func rename(path: String, to newName: String) throws
     func flush() throws
     func volumeInfo() throws -> AmigaVolumeInfo
+    /// Set an entry's Amiga protection bits (raw field as `listEntries`
+    /// reports it: HSPA active-high, RWED active-LOW).
+    func setProtection(path: String, protection: UInt32) throws
+    /// Set an entry's file comment.
+    func setComment(path: String, comment: String) throws
+}
+
+public extension AmigaVolumeOperations {
+    /// Backends without editable metadata (archives, FAT, anything read-only)
+    /// refuse explicitly rather than silently doing nothing.
+    func setProtection(path: String, protection: UInt32) throws {
+        throw AmigaDiskError.unsupportedOperation("this volume cannot change protection bits")
+    }
+    func setComment(path: String, comment: String) throws {
+        throw AmigaDiskError.unsupportedOperation("this volume cannot store file comments")
+    }
 }
 
 extension FFSFileSystem: AmigaVolumeOperations {
