@@ -163,6 +163,65 @@ public enum IconPatcher {
         return DiskObjectOffsets(toolTypesStart: ttStart, toolTypesEnd: ttEnd, drawerDataStart: ddStart)
     }
 
+    // MARK: - DefaultTool
+
+    /// Replace (or add/remove) a project icon's DefaultTool string. The string
+    /// lives between the image data and the ToolTypes block, stored as a LONG
+    /// byte count (including the terminating NUL) followed by Latin-1 bytes —
+    /// so changing it means splicing that region and flipping the
+    /// do_DefaultTool pointer field. Everything after it (ToolTypes,
+    /// DrawerData, NewIcon/GlowIcon trailers) is preserved verbatim.
+    public static func setDefaultTool(path: String, tool: String?) throws {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url) else { throw ToolingError.cannotRead(path) }
+        guard data.count >= 78, data[0] == 0xE3, data[1] == 0x10 else {
+            throw ToolingError.invalidFormat("Not a valid .info file: \(path)")
+        }
+        let gadgetRender = toolingReadBE32(data, at: 0x16)
+        let selectRender = toolingReadBE32(data, at: 0x1A)
+        let hadTool      = toolingReadBE32(data, at: 0x32) != 0
+
+        var off = 78
+        func skipImage() -> Bool {
+            guard off + 20 <= data.count else { return false }
+            let w = Int(toolingReadBE16(data, at: off + 4))
+            let h = Int(toolingReadBE16(data, at: off + 6))
+            let d = Int(toolingReadBE16(data, at: off + 8))
+            off += 20 + ((w + 15) / 16 * 2) * h * d
+            return off <= data.count
+        }
+        if gadgetRender != 0 { guard skipImage() else { throw ToolingError.invalidFormat(path) } }
+        if selectRender != 0 { guard skipImage() else { throw ToolingError.invalidFormat(path) } }
+
+        let regionStart = off
+        var regionEnd = off
+        if hadTool {
+            guard off + 4 <= data.count else { throw ToolingError.invalidFormat(path) }
+            let len = Int(toolingReadBE32(data, at: off))
+            regionEnd = off + 4 + len
+            guard regionEnd <= data.count else { throw ToolingError.invalidFormat(path) }
+        }
+
+        var replacement = Data()
+        let wanted = (tool?.isEmpty == false) ? tool! : nil
+        if let wanted {
+            let bytes = Array(wanted.unicodeScalars.map { UInt8($0.value & 0xFF) }) + [0]
+            replacement += toolingBEBytes(UInt32(bytes.count))
+            replacement += Data(bytes)
+        }
+
+        var out = Data()
+        out += data[0..<regionStart]
+        out += replacement
+        out += data[regionEnd...]
+        // do_DefaultTool: non-zero when a string is present (the value itself is
+        // a runtime pointer Workbench rewrites; only zero/non-zero matters).
+        let ptr: UInt32 = (wanted != nil) ? 0x0000_0064 : 0
+        let p = toolingBEBytes(ptr)
+        for i in 0..<4 { out[0x32 + i] = p[i] }
+        do { try out.write(to: url) } catch { throw ToolingError.cannotWrite(path) }
+    }
+
     // MARK: - ToolTypes export / import
 
     /// Export tooltype strings from a .info file to a plain-text file
