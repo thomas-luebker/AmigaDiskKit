@@ -96,6 +96,36 @@ final class PreviewRendererTests: XCTestCase {
         XCTAssertEqual(bmp.rgba[4 * 4], 0x95)        // pixel 4 R (grey background)
     }
 
+    /// A DRAWER icon puts a 56-byte DrawerData between the header and the first
+    /// Image. Decoding at a fixed offset 78 read the NewWindow as an Image and
+    /// silently dropped the artwork of every drawer on a volume.
+    func testDrawerIconSkipsDrawerData() throws {
+        let bmp = try XCTUnwrap(IconImageDecoder.decode(makeDrawerIcon()))
+        XCTAssertEqual(bmp.width, 8, "drawer image geometry must come from the real Image struct")
+        XCTAssertEqual(bmp.height, 1)
+        XCTAssertEqual(bmp.rgba[0], 0x00)            // pixel 0 set -> black
+        XCTAssertEqual(bmp.rgba[4 * 4], 0x95)        // pixel 4 clear -> grey
+    }
+
+    /// Same imagery as `makeIcon`, but typed as a drawer with a non-NULL
+    /// DrawerData pointer and the 56-byte struct actually present.
+    private func makeDrawerIcon() -> Data {
+        var d = [UInt8](repeating: 0, count: 78)
+        d[0] = 0xE3; d[1] = 0x10
+        d[0x16] = 0; d[0x17] = 0; d[0x18] = 0; d[0x19] = 1   // GadgetRender != 0
+        d[0x30] = 2                                          // do_Type = WBDRAWER
+        d[0x42] = 0; d[0x43] = 0; d[0x44] = 0; d[0x45] = 1   // do_DrawerData != 0
+
+        // 56-byte DrawerData, byte-filled so that misreading it as an Image
+        // yields an obviously wrong geometry rather than accidentally matching.
+        let drawerData = [UInt8](repeating: 0x7F, count: 56)
+
+        var img = be16(0) + be16(0) + be16(8) + be16(1) + be16(1)
+        img += [0, 0, 0, 0] + [0, 0] + [0, 0, 0, 0]
+        let plane: [UInt8] = [0xF0, 0x00]
+        return Data(d + drawerData + img + plane)
+    }
+
     // MARK: - Classifier
 
     func testRendererClassifiesImage() {

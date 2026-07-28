@@ -35,10 +35,17 @@ public enum IconImageDecoder {
         let data = (raw.startIndex == 0) ? raw : Data(raw)
         guard data.count >= 78, data[0] == 0xE3, data[1] == 0x10 else { return nil }
 
-        // GadgetRender (normal image) pointer; the first Image struct, if any,
-        // immediately follows the 78-byte header.
+        // GadgetRender (normal image) pointer.
         guard toolingReadBE32(data, at: 0x16) != 0 else { return nil }
-        return decodeImage(data, at: 78)
+
+        // The first Image struct follows the 78-byte header — but a DRAWER icon
+        // carries a 56-byte DrawerData (NewWindow + dd_CurrentX/Y) in between.
+        // Without this skip the decoder reads the NewWindow as an Image and
+        // gets a nonsense geometry, so EVERY drawer icon silently lost its
+        // artwork. Same rule IconMetadataParser and IconPatcher already follow.
+        var off = 78
+        if toolingReadBE32(data, at: 0x42) != 0 { off += 56 }
+        return decodeImage(data, at: off)
     }
 
     /// Decode a 20-byte Image struct + planar data at `off`.
