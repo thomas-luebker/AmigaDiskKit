@@ -640,6 +640,8 @@ func usage() -> Never {
     print("  \(prog) disk fs mkdir   <image> <part> <path>  [--slice-lba N] — create directories")
     print("  \(prog) disk fs copy    <image> <part> <host-src> <amiga-dst> [--slice-lba N] — copy to image")
     print("  \(prog) disk fs extract <image> <part> <amiga-src> <host-dst> [--slice-lba N] — extract from image")
+    print("  \(prog) lha create <out.lha> <dir> [--store]               — pack a host directory (lh5, lh0 with --store)")
+    print("  \(prog) lha extract <archive.lha> <host-dst>               — extract an archive")
     exit(1)
 }
 
@@ -652,6 +654,39 @@ if args[1] == "adf" && args.count >= 5 && args[2] == "extract" {
         print("adf extract: '\(args[3])' → '\(args[4])'")
     } catch {
         fputs("adf extract: \(error)\n", stderr); exit(2)
+    }
+    exit(0)
+}
+
+if args[1] == "lha" && args.count >= 5 {
+    do {
+        switch args[2] {
+        case "create":
+            var opts = LHAWriter.Options()
+            opts.storeOnly = args.contains("--store")
+            // --epoch <unix-seconds>: fixed member timestamp for
+            // deterministic archives (mklha.py parity - identical rebuilds
+            // yield identical bytes, keeping pinned sha256s stable).
+            if let i = args.firstIndex(of: "--epoch"), i + 1 < args.count,
+               let secs = Double(args[i + 1]) {
+                opts.fixedDate = Date(timeIntervalSince1970: secs)
+            }
+            let out = URL(fileURLWithPath: args[3])
+            let dir = URL(fileURLWithPath: args[4])
+            let data = try LHAWriter.archive(directory: dir, options: opts)
+            try data.write(to: out)
+            let a = try LHAArchive(url: out)
+            let orig = a.members.reduce(0) { $0 + $1.originalSize }
+            print("lha create: \(a.members.count) member(s), \(orig) → \(data.count) bytes → '\(args[3])'")
+        case "extract":
+            let a = try LHAArchive(url: URL(fileURLWithPath: args[3]))
+            try a.extract(to: URL(fileURLWithPath: args[4]))
+            print("lha extract: \(a.members.count) member(s) → '\(args[4])'")
+        default:
+            usage()
+        }
+    } catch {
+        fputs("lha: \(error)\n", stderr); exit(2)
     }
     exit(0)
 }

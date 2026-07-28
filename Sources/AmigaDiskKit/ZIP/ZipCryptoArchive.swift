@@ -15,7 +15,9 @@
 //
 
 import Foundation
+#if canImport(Compression)
 import Compression
+#endif
 
 public enum ZipCryptoError: Error, Equatable {
     case notAZip
@@ -223,6 +225,7 @@ public struct ZipCryptoArchive {
 
     // MARK: - DEFLATE via Apple Compression (raw stream)
 
+#if canImport(Compression)
     private static func inflate(_ deflated: Data, expected: Int, entry: String) throws -> Data {
         if expected == 0 { return Data() }
         // Streaming raw-DEFLATE (COMPRESSION_ZLIB = RFC 1951, no zlib wrapper).
@@ -260,6 +263,14 @@ public struct ZipCryptoArchive {
         guard let inflated = result else { throw ZipCryptoError.inflateFailed(entry: entry) }
         return inflated
     }
+#else
+    /* Linux (the Pi catalog publisher): Apple's Compression framework does
+     * not exist and nothing on that path ever opens a zip (ZipCrypto is the
+     * Boing-Bag reader). Fail loudly if it is ever reached. */
+    private static func inflate(_ deflated: Data, expected: Int, entry: String) throws -> Data {
+        throw ZipCryptoError.inflateFailed(entry: entry)
+    }
+#endif
 
     // MARK: - helpers
 

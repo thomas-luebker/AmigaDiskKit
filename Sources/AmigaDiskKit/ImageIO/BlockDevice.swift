@@ -11,7 +11,7 @@ public struct HostFileIdentity: Equatable {
         var st = stat()
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
         self.dev = Int64(st.st_dev)
-        self.ino = st.st_ino
+        self.ino = UInt64(st.st_ino)
     }
 
     /// Nil if `path` does not resolve to a regular file.
@@ -19,7 +19,7 @@ public struct HostFileIdentity: Equatable {
         var st = stat()
         guard stat(path, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
         self.dev = Int64(st.st_dev)
-        self.ino = st.st_ino
+        self.ino = UInt64(st.st_ino)
     }
 }
 
