@@ -21,7 +21,7 @@ public enum GWAck: UInt8 {
     case badPin = 10, badCylinder = 11, outOfSRAM = 12, outOfFlash = 13
 }
 
-public enum GWBusType: UInt8 {
+public enum GWBusType: UInt8, Sendable {
     case invalid = 0, ibmpc = 1, shugart = 2
 }
 
