@@ -48,7 +48,11 @@ public final class BlockDevice {
             ? (try? FileHandle(forReadingFrom: url))
             : (try? FileHandle(forUpdating: url))
         guard let h else {
-            throw AmigaDiskError.readFailed(offset: 0, length: 0, reason: "cannot open \(url.path)")
+            throw AmigaDiskError.cannotOpen(
+                path: url.path,
+                reason: FileManager.default.fileExists(atPath: url.path)
+                    ? "no permission, or it is open elsewhere"
+                    : "the file no longer exists")
         }
         self.handle = h
         self.blockSize = blockSize

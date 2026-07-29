@@ -1,5 +1,16 @@
-public enum AmigaDiskError: Error, CustomStringConvertible {
+import Foundation
+
+/// - Note: `LocalizedError` matters here. Without it, Cocoa formats a thrown
+///   AmigaDiskError as "The operation couldn't be completed.
+///   (AmigaDiskKit.AmigaDiskError error 0.)" — the case INDEX, with the real
+///   reason discarded. Every one of these cases already carries a precise
+///   `description`; this is what makes users and testers actually see it.
+public enum AmigaDiskError: Error, CustomStringConvertible, LocalizedError {
     // ImageIO
+    /// The image or device could not be opened at all (missing, moved, or no
+    /// permission). Distinct from readFailed so the message does not talk
+    /// about offsets and lengths that mean nothing for an open failure.
+    case cannotOpen(path: String, reason: String)
     case readFailed(offset: Int64, length: Int, reason: String)
     case writeFailed(offset: Int64, length: Int, reason: String)
     case imageTooSmall(required: Int64, actual: Int64)
@@ -43,6 +54,8 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
+        case .cannotOpen(let path, let reason):
+            return reason.isEmpty ? "cannot open \(path)" : "cannot open \(path): \(reason)"
         case .readFailed(let offset, let length, let reason):
             return "read failed at offset \(offset), length \(length): \(reason)"
         case .writeFailed(let offset, let length, let reason):
@@ -98,4 +111,8 @@ public enum AmigaDiskError: Error, CustomStringConvertible {
             return "file too large for filesystem: '\(path)' is \(size) bytes (max \(maxSize))"
         }
     }
+
+    /// What Cocoa shows in an alert. Same text as `description` — one wording,
+    /// whether the error is printed to a log or put in front of a person.
+    public var errorDescription: String? { description }
 }
