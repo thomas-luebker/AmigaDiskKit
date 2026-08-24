@@ -85,6 +85,21 @@ public enum IconPatcher {
     }
 
     /// Read the do_Type field (big-endian UInt16 at offset 0x30).
+    /// The icon's saved Workbench position, or nil when it is
+    /// NO_ICON_POSITION (Int32.min) - i.e. "let Workbench arrange it".
+    /// Read-only companion to `update(spec:currentX/currentY:)`, so a layout
+    /// pass can see what previous passes actually wrote instead of assuming.
+    public static func iconPosition(path: String) throws -> (x: Int32, y: Int32)? {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard data.count >= 78 else { return nil }
+        func be32(_ o: Int) -> Int32 {
+            Int32(bitPattern: (UInt32(data[o]) << 24) | (UInt32(data[o+1]) << 16)
+                            | (UInt32(data[o+2]) << 8) | UInt32(data[o+3]))
+        }
+        let x = be32(0x3A), y = be32(0x3E)      // do_CurrentX / do_CurrentY
+        return (x == Int32.min || y == Int32.min) ? nil : (x, y)
+    }
+
     public static func infoType(path: String) throws -> UInt16 {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
             throw ToolingError.cannotRead(path)
@@ -100,11 +115,17 @@ public enum IconPatcher {
     /// File offsets into the variable-length section of a DiskObject binary.
     ///
     /// Variable-data layout (after 78-byte header):
+    ///   DrawerData (if ptr != 0):       56 bytes - NewWindow(48) + dd_CurrentX/Y
     ///   Image1 (if GadgetRender != 0):  20-byte Image struct + pixel data
     ///   Image2 (if SelectRender != 0):  same
     ///   DefaultTool (if ptr != 0):      ULONG len (incl. null) + BYTE[len]
     ///   ToolTypes (if ptr != 0):        ULONG ptrArrayBytes=(n+1)*4, then n×(ULONG len + BYTE[len])
-    ///   DrawerData (if ptr != 0):       NewWindow(88 bytes) + dd_CurrentX/Y + optional dd_Flags
+    ///
+    /// DrawerData comes FIRST, not last. This used to walk it last and describe
+    /// NewWindow as 88 bytes (it is 48), so every drawer-geometry patch wrote to
+    /// the wrong offset - and for a drawer icon the images were parsed starting
+    /// inside DrawerData, skewing the tooltype offsets too. Verified against
+    /// real icons: a drawer icon's Image1 begins at 78 + 56 = 134.
     public struct DiskObjectOffsets {
         public let toolTypesStart: Int?   // offset of the ptrArrayBytes ULONG
         public let toolTypesEnd: Int?     // first byte after ToolTypes block
@@ -121,6 +142,13 @@ public enum IconPatcher {
         let drawerDataPtr  = toolingReadBE32(data, at: 0x42)
 
         var off = 78
+
+        // DrawerData first: 56 bytes of NewWindow + dd_CurrentX/Y.
+        let drawerStart: Int? = drawerDataPtr != 0 ? off : nil
+        if drawerDataPtr != 0 {
+            off += 56
+            guard off <= data.count else { return nil }
+        }
 
         func skipImage() -> Bool {
             guard off + 20 <= data.count else { return false }
@@ -159,8 +187,7 @@ public enum IconPatcher {
             ttEnd = off
         }
 
-        let ddStart: Int? = (drawerDataPtr != 0) ? off : nil
-        return DiskObjectOffsets(toolTypesStart: ttStart, toolTypesEnd: ttEnd, drawerDataStart: ddStart)
+        return DiskObjectOffsets(toolTypesStart: ttStart, toolTypesEnd: ttEnd, drawerDataStart: drawerStart)
     }
 
     // MARK: - DefaultTool
