@@ -35,6 +35,9 @@ public enum AmigaDiskError: Error, CustomStringConvertible, LocalizedError {
     case entryExists(path: String)
     case invalidName(name: String, reason: String)
     case unsupportedDosType(UInt32)
+    /// de_SectorsPerBlock is not a power of two (0 included), so the
+    /// filesystem block size cannot be derived from it.
+    case invalidSectorsPerBlock(partition: String, value: UInt32)
     /// The filesystem/backend cannot perform this operation (e.g. comments on a
     /// long-filename volume, metadata edits on a read-only archive).
     case unsupportedOperation(String)
@@ -93,6 +96,8 @@ public enum AmigaDiskError: Error, CustomStringConvertible, LocalizedError {
             return "invalid name '\(name)': \(reason)"
         case .unsupportedDosType(let dosType):
             return "unsupported DOS type: 0x\(String(dosType, radix: 16, uppercase: true))"
+        case .invalidSectorsPerBlock(let partition, let value):
+            return "partition \(partition) has \(value) sectors per filesystem block; it must be a power of two (1 = 512-byte blocks)"
         case .unsupportedOperation(let why):
             return "unsupported operation: \(why)"
         case .partitionOffsetOverflow(let lowCyl, let blocksPerCylinder, let blockSize):

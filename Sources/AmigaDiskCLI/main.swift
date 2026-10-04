@@ -118,7 +118,13 @@ private func parsePartitionSpec(_ s: String) -> PartitionSpec? {
     let sizeCyls: UInt32        = fields.count > 2 ? UInt32(fields[2]) ?? 0 : 0
     let isBootable: Bool        = fields.count > 3 && (fields[3] == "boot" || fields[3] == "1")
     let priority: Int32         = fields.count > 4 ? Int32(fields[4]) ?? 0 : 0
-    let sectorsPerFSBlk: UInt32 = fields.count > 5 ? UInt32(fields[5]) ?? 1 : 1
+    let sectorsPerFSBlk: UInt32 = fields.count > 5 && !fields[5].isEmpty ? UInt32(fields[5]) ?? 0 : 1
+    // FFS derives its block size from this; 0 used to be stored and then
+    // divided by in rdb-format (AmigaDiskKit#5)
+    guard sectorsPerFSBlk > 0, sectorsPerFSBlk & (sectorsPerFSBlk - 1) == 0 else {
+        fputs("fsblk '\(fields[5])' must be a power of two: 1, 2, 4, ... (1 = 512-byte blocks)\n", stderr)
+        return nil
+    }
     return PartitionSpec(name: fields[0], dosType: dosType, sizeCylinders: sizeCyls,
                          isBootable: isBootable, bootPriority: priority,
                          sectorsPerFSBlock: sectorsPerFSBlk)

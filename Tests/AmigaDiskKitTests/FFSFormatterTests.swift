@@ -113,6 +113,29 @@ final class FFSFormatterTests: XCTestCase {
 
     // MARK: - Format + verify round-trips
 
+    // AmigaDiskKit#5: an RDB carrying de_SectorsPerBlock = 0 used to reach a
+    // division by zero in layout() and die on a runtime trap with no output.
+    func testFormat_zeroSectorsPerBlock_throwsInsteadOfTrapping() throws {
+        let imageURL = tmpDir.appendingPathComponent("fsblk0.img")
+        try DiskBuilder.build(url: imageURL, sizeBytes: 32 * 1024 * 1024,
+                              layout: .pureRDB(partitions: [
+                                PartitionSpec(name: "DH0", dosType: KnownDosType.dos3,
+                                              sectorsPerFSBlock: 0)
+                              ]))
+        let device = try BlockDevice(url: imageURL)
+        let rdb    = try RigidDiskBlock.scan(device: device, sliceStartLBA: 0)
+        let part   = rdb.partitionBlocks[0]
+        XCTAssertEqual(part.sectors, 0)
+        XCTAssertThrowsError(try FFSFormatter.format(device: device, partition: part, rdb: rdb)) { error in
+            guard case AmigaDiskError.invalidSectorsPerBlock(let name, let value) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertEqual(name, "DH0")
+            XCTAssertEqual(value, 0)
+        }
+        XCTAssertThrowsError(try FFSFileSystem(device: device, partition: part, rdb: rdb))
+    }
+
     func testFormatDOS3_NoExtension() throws {
         let imageURL = tmpDir.appendingPathComponent("dos3-small.img")
         let sizeBytes: Int64 = 32 * 1024 * 1024

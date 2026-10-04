@@ -98,6 +98,9 @@ public enum FFSFormatter {
         rdb: RigidDiskBlock,
         spec: FFSFormatSpec = FFSFormatSpec()
     ) throws {
+        guard partition.sectors > 0, partition.sectors & (partition.sectors - 1) == 0 else {
+            throw AmigaDiskError.invalidSectorsPerBlock(partition: partition.driveName, value: partition.sectors)
+        }
         let layout  = Self.layout(partition: partition, rdb: rdb)
         let fsSize  = layout.fsBlockSize
 

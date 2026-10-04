@@ -34,6 +34,9 @@ public final class FFSFileSystem {
         guard isFFS || isOFSType else {
             throw AmigaDiskError.unsupportedDosType(partition.dosType)
         }
+        guard partition.sectors > 0, partition.sectors & (partition.sectors - 1) == 0 else {
+            throw AmigaDiskError.invalidSectorsPerBlock(partition: partition.driveName, value: partition.sectors)
+        }
         isOFS = isOFSType
         isLongNameFS = KnownDosType.isLongNameFS(partition.dosType)
         self.device        = device
