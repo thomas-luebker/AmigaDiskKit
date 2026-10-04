@@ -118,16 +118,41 @@ extension FFSEntry {
 
 // MARK: - FFS hash function
 
-/// Compute the FFS hash slot for a name using the simple ASCII toupper algorithm.
+/// AmigaDOS `toupper` as the FFS handler applies it to names (hash + compare).
+///
+/// International mode (DOS\2 – DOS\7) also folds the Latin-1 letters
+/// à–þ (0xE0–0xFE, except ÷ 0xF7) onto À–Þ. Non-international volumes
+/// (DOS\0 / DOS\1) fold a–z only. Getting this wrong puts an accented
+/// name in a different hash slot than the Amiga looks in: Workbench still
+/// LISTS it (a directory scan walks every chain) but `Lock` by name fails
+/// with "object not found" (PiStorm, `SYS:Catalogs/español`, 2026-10-04).
+@inline(__always)
+public func ffsToUpper(_ c: UInt8, international: Bool) -> UInt8 {
+    if c >= 0x61 && c <= 0x7A { return c - 0x20 }
+    if international && c >= 0xE0 && c <= 0xFE && c != 0xF7 { return c - 0x20 }
+    return c
+}
+
+/// Compute the FFS hash slot for a name, over its on-disk Latin-1 bytes:
+/// `hash = len; hash = (hash * 13 + toupper(c)) & 0x7FF` per byte, then
+/// `% htSize`. `international` must be the VOLUME's mode
+/// (`KnownDosType.isInternational`) — see `ffsToUpper`.
 /// Returns a value in `0 ..< htSize`.
-public func ffsHashName(_ name: String, htSize: Int) -> Int {
+public func ffsHashName(_ name: String, htSize: Int, international: Bool) -> Int {
     guard htSize > 0 else { return 0 }
-    var hash = UInt32(name.count)
-    for scalar in name.unicodeScalars {
-        let c = scalar.value
-        let upper: UInt32 = (c >= 0x61 && c <= 0x7A) ? c - 0x20 : c
-        hash = hash &* 13 &+ upper
+    let bytes = name.amigaLatin1Bytes
+    var hash = UInt32(bytes.count)
+    for b in bytes {
+        hash = (hash &* 13 &+ UInt32(ffsToUpper(b, international: international))) & 0x7FF
     }
-    hash &= 0x7FF
     return Int(hash) % htSize
+}
+
+/// FFS name equality: byte-wise under the volume's `ffsToUpper`.
+public func ffsNamesEqual(_ a: String, _ b: String, international: Bool) -> Bool {
+    let x = a.amigaLatin1Bytes, y = b.amigaLatin1Bytes
+    guard x.count == y.count else { return false }
+    for i in x.indices where ffsToUpper(x[i], international: international)
+        != ffsToUpper(y[i], international: international) { return false }
+    return true
 }

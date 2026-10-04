@@ -276,12 +276,126 @@ final class FFSFileSystemTests: XCTestCase {
     func testFfsHash_knownValues() {
         // FFS hash for "Prefs" with htSize=72: expected slot
         let htSize = 72
-        let h1 = ffsHashName("Prefs", htSize: htSize)
+        let h1 = ffsHashName("Prefs", htSize: htSize, international: true)
         XCTAssertGreaterThanOrEqual(h1, 0)
         XCTAssertLessThan(h1, htSize)
         // Case-insensitive: hash("Prefs") == hash("prefs") == hash("PREFS")
-        XCTAssertEqual(ffsHashName("prefs",  htSize: htSize), h1)
-        XCTAssertEqual(ffsHashName("PREFS",  htSize: htSize), h1)
+        XCTAssertEqual(ffsHashName("prefs",  htSize: htSize, international: true), h1)
+        XCTAssertEqual(ffsHashName("PREFS",  htSize: htSize, international: true), h1)
+    }
+
+    // MARK: - International mode (Latin-1 names)
+    //
+    // Expected slots come from an independent implementation of the AmigaOS
+    // algorithm (ADFlib adfGetHashValue / adfIntlToUpper), NOT from this code:
+    // a Mac write+read round trip uses the same hash on both sides and passed
+    // all along while the real Amiga could not open `SYS:Catalogs/español`
+    // (PiStorm, 2026-10-04).
+
+    func testFfsHash_internationalKnownValues() {
+        // htSize 72 = 512-byte blocks.
+        XCTAssertEqual(ffsHashName("español",   htSize: 72, international: true),  20)
+        XCTAssertEqual(ffsHashName("español",   htSize: 72, international: false), 36)
+        XCTAssertEqual(ffsHashName("ESPAÑOL",   htSize: 72, international: true),  20)
+        XCTAssertEqual(ffsHashName("français",  htSize: 72, international: true),  47)
+        XCTAssertEqual(ffsHashName("français",  htSize: 72, international: false), 71)
+        XCTAssertEqual(ffsHashName("português", htSize: 72, international: true),  8)
+        XCTAssertEqual(ffsHashName("português", htSize: 72, international: false), 32)
+        // Pure ASCII is identical in both modes.
+        XCTAssertEqual(ffsHashName("Prefs",     htSize: 72, international: true),  9)
+        XCTAssertEqual(ffsHashName("Disk.info", htSize: 72, international: false), 54)
+    }
+
+    func testFfsToUpper_latin1Rules() {
+        XCTAssertEqual(ffsToUpper(0xF1, international: true),  0xD1)  // ñ → Ñ
+        XCTAssertEqual(ffsToUpper(0xF1, international: false), 0xF1)  // DOS\1: untouched
+        XCTAssertEqual(ffsToUpper(0xE0, international: true),  0xC0)  // à → À
+        XCTAssertEqual(ffsToUpper(0xFE, international: true),  0xDE)  // þ → Þ
+        XCTAssertEqual(ffsToUpper(0xF7, international: true),  0xF7)  // ÷ is not a letter
+        XCTAssertEqual(ffsToUpper(0xFF, international: true),  0xFF)  // ÿ has no Latin-1 capital
+        XCTAssertEqual(ffsToUpper(0xDF, international: true),  0xDF)  // ß stays
+        XCTAssertEqual(ffsToUpper(0x61, international: false), 0x41)
+    }
+
+    func testKnownDosTypeInternational() {
+        XCTAssertFalse(KnownDosType.isInternational(KnownDosType.dos0))
+        XCTAssertFalse(KnownDosType.isInternational(KnownDosType.dos1))
+        XCTAssertTrue(KnownDosType.isInternational(KnownDosType.dos2))
+        XCTAssertTrue(KnownDosType.isInternational(KnownDosType.dos3))
+        XCTAssertTrue(KnownDosType.isInternational(KnownDosType.dos5))
+        XCTAssertTrue(KnownDosType.isInternational(KnownDosType.dos7))
+        XCTAssertFalse(KnownDosType.isInternational(KnownDosType.pds3))
+    }
+
+    /// Root hash-table slot that holds `block`, or nil.
+    private func rootSlot(of block: UInt32, in fs: FFSFileSystem) throws -> Int? {
+        let root = try fs.readFSBlock(fs.rootFSBlock)
+        let htSize = root.count / 4 - 56
+        for slot in 0 ..< htSize {
+            var chain = root.readBE32(at: (6 + slot) * 4)
+            while chain != 0 {
+                if chain == block { return slot }
+                let d = try fs.readFSBlock(chain)
+                chain = d.readBE32(at: (d.count / 4 - 4) * 4)
+            }
+        }
+        return nil
+    }
+
+    func testLatin1NameLandsInAmigaSlot_DOS3() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos3)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.makeDirectory(path: "español")
+        try fs.writeFile(path: "français.txt", data: Data("x".utf8))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let dir = try XCTUnwrap(try fs2.lookup(name: "español", inDir: fs2.rootFSBlock))
+        XCTAssertEqual(try rootSlot(of: dir, in: fs2), 20, "must sit where AmigaOS (intl) looks")
+        // Intl compare folds accented letters, like the Amiga.
+        XCTAssertEqual(try fs2.lookup(name: "ESPAÑOL", inDir: fs2.rootFSBlock), dir)
+        XCTAssertNotNil(try fs2.lookup(name: "FRANÇAIS.TXT", inDir: fs2.rootFSBlock))
+    }
+
+    func testLatin1NameLandsInAmigaSlot_DOS1() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos1)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.makeDirectory(path: "español")
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let dir = try XCTUnwrap(try fs2.lookup(name: "español", inDir: fs2.rootFSBlock))
+        XCTAssertEqual(try rootSlot(of: dir, in: fs2), 36, "non-intl volume: ASCII fold only")
+        // Without INTL, ñ and Ñ are different names.
+        XCTAssertNil(try fs2.lookup(name: "ESPAÑOL", inDir: fs2.rootFSBlock))
+    }
+
+    /// Images built before the fix hold Latin-1 entries in the ASCII-fold
+    /// slot. The Mac side must still find and delete them.
+    func testLegacyMisplacedEntryStillFoundAndDeletable() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos3)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.makeDirectory(path: "español")
+        try fs.flush()
+
+        // Move the entry from its correct slot (20) to the legacy one (36).
+        var root = try fs.readFSBlock(fs.rootFSBlock)
+        let block = root.readBE32(at: (6 + 20) * 4)
+        XCTAssertNotEqual(block, 0)
+        root.writeBE32(UInt32(0), at: (6 + 20) * 4)
+        root.writeBE32(block, at: (6 + 36) * 4)
+        embedFFSBlockChecksum(into: &root)
+        try fs.writeFSBlock(fs.rootFSBlock, root)
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.lookup(name: "español", inDir: fs2.rootFSBlock), block)
+        try fs2.delete(path: "español")
+        try fs2.flush()
+
+        let fs3 = try openFS(imgURL: imgURL)
+        XCTAssertNil(try fs3.lookup(name: "español", inDir: fs3.rootFSBlock))
+        XCTAssertNil(try rootSlot(of: block, in: fs3), "unlinked from the legacy slot")
     }
 
     // MARK: - DOS7

@@ -20,6 +20,9 @@ public final class FFSFileSystem {
     /// classic-layout headers on an LNFS volume produces files the real
     /// FFS2 handler sees as nameless (Work Disk.info bug, 2026-06-12).
     let isLongNameFS: Bool
+    /// International name mode (DOS\2+): accented Latin-1 letters fold in
+    /// the name hash and compare. See `ffsToUpper`.
+    let isInternational: Bool
 
     // MARK: - Init
 
@@ -39,6 +42,7 @@ public final class FFSFileSystem {
         }
         isOFS = isOFSType
         isLongNameFS = KnownDosType.isLongNameFS(partition.dosType)
+        isInternational = KnownDosType.isInternational(partition.dosType)
         self.device        = device
         self.sliceStartLBA = sliceStartLBA
         self.partition     = partition
@@ -350,18 +354,31 @@ public final class FFSFileSystem {
     func lookup(name: String, inDir dirFSBlock: UInt32) throws -> UInt32? {
         let dirData = try readFSBlock(dirFSBlock)
         let htSize = readHTSize(dirData)
-        let hash = ffsHashName(name, htSize: htSize)
-        var chainBlock = dirData.readBE32(at: (6 + hash) * 4)
-        while chainBlock != 0 {
-            let entryData = try readFSBlock(chainBlock)
-            let ebl = entryData.count / 4
-            let entryName = isLongNameFS
-                ? entryData.readBSTR(at: (ebl - 46) * 4, maxLength: 112)
-                : entryData.readBSTR(at: (ebl - 20) * 4, maxLength: 32)
-            if entryName.uppercased() == name.uppercased() { return chainBlock }
-            chainBlock = entryData.readBE32(at: (ebl - 4) * 4)
+        for slot in hashSlots(for: name, htSize: htSize) {
+            var chainBlock = dirData.readBE32(at: (6 + slot) * 4)
+            while chainBlock != 0 {
+                let entryData = try readFSBlock(chainBlock)
+                let ebl = entryData.count / 4
+                let entryName = isLongNameFS
+                    ? entryData.readBSTR(at: (ebl - 46) * 4, maxLength: 112)
+                    : entryData.readBSTR(at: (ebl - 20) * 4, maxLength: 32)
+                if ffsNamesEqual(entryName, name, international: isInternational) { return chainBlock }
+                chainBlock = entryData.readBE32(at: (ebl - 4) * 4)
+            }
         }
         return nil
+    }
+
+    /// The slot a name belongs in, then — on an international volume only,
+    /// and only when it differs — the slot an AmigaDiskKit build before
+    /// 2026-10-05 put it in (ASCII-only fold). Reading both keeps images built
+    /// with the old hash usable from the Mac (Disk Browser, Manage Software,
+    /// Emu68 update); NEW entries always go into the correct slot.
+    private func hashSlots(for name: String, htSize: Int) -> [Int] {
+        let slot = ffsHashName(name, htSize: htSize, international: isInternational)
+        guard isInternational else { return [slot] }
+        let legacy = ffsHashName(name, htSize: htSize, international: false)
+        return legacy == slot ? [slot] : [slot, legacy]
     }
 
     /// List all entries in a directory block.
@@ -385,7 +402,7 @@ public final class FFSFileSystem {
     private func addEntryToDir(entryFSBlock: UInt32, name: String, inDir dirFSBlock: UInt32) throws {
         var dirData = try readFSBlock(dirFSBlock)
         let htSize = readHTSize(dirData)
-        let hash = ffsHashName(name, htSize: htSize)
+        let hash = ffsHashName(name, htSize: htSize, international: isInternational)
         let slotOff = (6 + hash) * 4
 
         let existingHead = dirData.readBE32(at: slotOff)
@@ -600,19 +617,21 @@ public final class FFSFileSystem {
     private func removeEntryFromDir(entryFSBlock: UInt32, name: String, inDir dirFSBlock: UInt32) throws {
         var dirData = try readFSBlock(dirFSBlock)
         let htSize  = readHTSize(dirData)
-        let hash    = ffsHashName(name, htSize: htSize)
-        let slotOff = (6 + hash) * 4
-        let head    = dirData.readBE32(at: slotOff)
 
         let entryData = try readFSBlock(entryFSBlock)
         let ebl       = entryData.count / 4
         let hashChain = entryData.readBE32(at: (ebl - 4) * 4)
 
-        if head == entryFSBlock {
-            dirData.writeBE32(hashChain, at: slotOff)
-            embedFFSBlockChecksum(into: &dirData)
-            try writeFSBlock(dirFSBlock, dirData)
-        } else {
+        // The entry sits in its correct slot, or (old images) in the legacy one.
+        for slot in hashSlots(for: name, htSize: htSize) {
+            let slotOff = (6 + slot) * 4
+            let head    = dirData.readBE32(at: slotOff)
+            if head == entryFSBlock {
+                dirData.writeBE32(hashChain, at: slotOff)
+                embedFFSBlockChecksum(into: &dirData)
+                try writeFSBlock(dirFSBlock, dirData)
+                return
+            }
             var prevBlock = head
             while prevBlock != 0 && prevBlock != 0xFFFF_FFFF {
                 var prevData = try readFSBlock(prevBlock)

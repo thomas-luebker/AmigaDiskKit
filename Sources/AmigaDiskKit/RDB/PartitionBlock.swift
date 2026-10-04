@@ -225,6 +225,13 @@ public struct KnownDosType {
         dosType == dos6 || dosType == dos7
     }
 
+    /// International name mode: DOS\2 and up (the INTL bit, or DirCache /
+    /// LNFS, which imply it — same rule as amitools' `is_intl`). Decides how
+    /// the FFS name hash folds Latin-1 letters (`ffsToUpper`).
+    public static func isInternational(_ dosType: UInt32) -> Bool {
+        (dosType & 0xFFFF_FF00) == 0x444F_5300 && (dosType & 0x6) != 0
+    }
+
     public static func isPFS3(_ dosType: UInt32) -> Bool {
         dosType == pds3
     }
