@@ -370,6 +370,51 @@ final class FFSFileSystemTests: XCTestCase {
         XCTAssertNil(try fs2.lookup(name: "ESPAÑOL", inDir: fs2.rootFSBlock))
     }
 
+    /// A name longer than 30 bytes is stored cut to 30 — and must be hashed
+    /// as stored. The full name's slot (40) is where AmigaOS never looks:
+    /// `S:OneTimeRun/CheckScreenModeandChipset_Pistorm` could not be opened
+    /// on the PiStorm (2026-10-05). Slot 7 = independent reference.
+    func testLongNameHashedAsStored_DOS3() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos3)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "CheckScreenModeandChipset_Pistorm", data: Data("x".utf8))
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        let entries = try fs2.listDirectory()
+        XCTAssertEqual(entries.map(\.name), ["CheckScreenModeandChipset_Pist"])
+        let block = try XCTUnwrap(try fs2.lookup(name: "CheckScreenModeandChipset_Pist", inDir: fs2.rootFSBlock))
+        XCTAssertEqual(try rootSlot(of: block, in: fs2), 7)
+        // The full name still resolves to the stored entry (rebuilds overwrite, not duplicate).
+        XCTAssertEqual(try fs2.lookup(name: "CheckScreenModeandChipset_Pistorm", inDir: fs2.rootFSBlock), block)
+        try fs2.writeFile(path: "CheckScreenModeandChipset_Pistorm", data: Data("y".utf8), overwrite: true)
+        try fs2.flush()
+        XCTAssertEqual(try openFS(imgURL: imgURL).listDirectory().count, 1)
+    }
+
+    /// An old image holds the long name in the full-name slot (40); the Mac
+    /// side must still find and delete it.
+    func testLegacyLongNameSlotStillFoundAndDeletable() throws {
+        let (imgURL, _, _) = try makeFormattedImage(dosType: KnownDosType.dos3)
+        let fs = try openFS(imgURL: imgURL)
+        try fs.writeFile(path: "CheckScreenModeandChipset_Pistorm", data: Data("x".utf8))
+        try fs.flush()
+        var root = try fs.readFSBlock(fs.rootFSBlock)
+        let block = root.readBE32(at: (6 + 7) * 4)
+        XCTAssertNotEqual(block, 0)
+        root.writeBE32(UInt32(0), at: (6 + 7) * 4)
+        root.writeBE32(block, at: (6 + 40) * 4)
+        embedFFSBlockChecksum(into: &root)
+        try fs.writeFSBlock(fs.rootFSBlock, root)
+        try fs.flush()
+
+        let fs2 = try openFS(imgURL: imgURL)
+        XCTAssertEqual(try fs2.lookup(name: "CheckScreenModeandChipset_Pist", inDir: fs2.rootFSBlock), block)
+        try fs2.delete(path: "CheckScreenModeandChipset_Pist")
+        try fs2.flush()
+        XCTAssertNil(try rootSlot(of: block, in: try openFS(imgURL: imgURL)))
+    }
+
     /// Images built before the fix hold Latin-1 entries in the ASCII-fold
     /// slot. The Mac side must still find and delete them.
     func testLegacyMisplacedEntryStillFoundAndDeletable() throws {

@@ -354,7 +354,14 @@ public final class FFSFileSystem {
     func lookup(name: String, inDir dirFSBlock: UInt32) throws -> UInt32? {
         let dirData = try readFSBlock(dirFSBlock)
         let htSize = readHTSize(dirData)
-        for slot in hashSlots(for: name, htSize: htSize) {
+        var slots = hashSlots(for: name, htSize: htSize)
+        // Older images hashed a too-long name UNCUT, and the original is
+        // unknown now — so a name at the length limit that misses its slots
+        // is searched in every chain (rare: only names exactly that long).
+        if diskName(name).amigaLatin1Bytes.count == maxNameBytes {
+            slots += (0 ..< htSize).filter { !slots.contains($0) }
+        }
+        for slot in slots {
             var chainBlock = dirData.readBE32(at: (6 + slot) * 4)
             while chainBlock != 0 {
                 let entryData = try readFSBlock(chainBlock)
@@ -362,23 +369,41 @@ public final class FFSFileSystem {
                 let entryName = isLongNameFS
                     ? entryData.readBSTR(at: (ebl - 46) * 4, maxLength: 112)
                     : entryData.readBSTR(at: (ebl - 20) * 4, maxLength: 32)
-                if ffsNamesEqual(entryName, name, international: isInternational) { return chainBlock }
+                if ffsNamesEqual(entryName, diskName(name), international: isInternational) { return chainBlock }
                 chainBlock = entryData.readBE32(at: (ebl - 4) * 4)
             }
         }
         return nil
     }
 
-    /// The slot a name belongs in, then — on an international volume only,
-    /// and only when it differs — the slot an AmigaDiskKit build before
-    /// 2026-10-05 put it in (ASCII-only fold). Reading both keeps images built
-    /// with the old hash usable from the Mac (Disk Browser, Manage Software,
-    /// Emu68 update); NEW entries always go into the correct slot.
+    /// The longest name the volume stores (bytes): 30, or 109 on LNFS.
+    private var maxNameBytes: Int { isLongNameFS ? 109 : 30 }
+
+    /// A name as it lands on disk: Latin-1, cut to `maxNameBytes`. Hash and
+    /// compare must use THIS form. Hashing the full name while the BSTR
+    /// writer silently cut it put `S:OneTimeRun/CheckScreenModeandChipset_Pistorm`
+    /// (33 chars → stored as `…_Pist`) in a slot the Amiga never looks in, so
+    /// the PiStorm first-boot script could not be opened (2026-10-05).
+    func diskName(_ name: String) -> String {
+        let bytes = name.amigaLatin1Bytes
+        guard bytes.count > maxNameBytes else { return name }
+        return String(bytes: bytes.prefix(maxNameBytes), encoding: .isoLatin1) ?? name
+    }
+
+    /// The slot a name belongs in (its stored form, the volume's fold), then
+    /// the slots AmigaDiskKit used before 2026-10-05 — the full, uncut name
+    /// with an ASCII-only fold. Reading those keeps older images usable from
+    /// the Mac (Disk Browser, Manage Software, Emu68 update); NEW entries
+    /// always go into the correct slot.
     private func hashSlots(for name: String, htSize: Int) -> [Int] {
-        let slot = ffsHashName(name, htSize: htSize, international: isInternational)
-        guard isInternational else { return [slot] }
-        let legacy = ffsHashName(name, htSize: htSize, international: false)
-        return legacy == slot ? [slot] : [slot, legacy]
+        let candidates = [
+            ffsHashName(diskName(name), htSize: htSize, international: isInternational),
+            ffsHashName(name, htSize: htSize, international: false),
+            ffsHashName(diskName(name), htSize: htSize, international: false),
+        ]
+        var slots: [Int] = []
+        for c in candidates where !slots.contains(c) { slots.append(c) }
+        return slots
     }
 
     /// List all entries in a directory block.
@@ -402,7 +427,7 @@ public final class FFSFileSystem {
     private func addEntryToDir(entryFSBlock: UInt32, name: String, inDir dirFSBlock: UInt32) throws {
         var dirData = try readFSBlock(dirFSBlock)
         let htSize = readHTSize(dirData)
-        let hash = ffsHashName(name, htSize: htSize, international: isInternational)
+        let hash = ffsHashName(diskName(name), htSize: htSize, international: isInternational)
         let slotOff = (6 + hash) * 4
 
         let existingHead = dirData.readBE32(at: slotOff)
@@ -622,8 +647,10 @@ public final class FFSFileSystem {
         let ebl       = entryData.count / 4
         let hashChain = entryData.readBE32(at: (ebl - 4) * 4)
 
-        // The entry sits in its correct slot, or (old images) in the legacy one.
-        for slot in hashSlots(for: name, htSize: htSize) {
+        // The entry sits in its correct slot, or (old images) in a legacy one;
+        // any other chain is a last resort, so an entry never stays linked.
+        let first = hashSlots(for: name, htSize: htSize)
+        for slot in first + (0 ..< htSize).filter({ !first.contains($0) }) {
             let slotOff = (6 + slot) * 4
             let head    = dirData.readBE32(at: slotOff)
             if head == entryFSBlock {
