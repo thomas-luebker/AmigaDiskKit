@@ -31,6 +31,35 @@ final class FAT32VolumeTests: XCTestCase {
         XCTAssertFalse(try vol.exists("/ghost.txt"))
     }
 
+    // MARK: - Dot-names + empty files (macOS indexing markers on EMU68BOOT)
+
+    /// `.metadata_never_index` and `.fseventsd/no_log` — leading-dot long
+    /// names holding zero bytes — must be writable and come back by name,
+    /// as macOS looks them up (Emu68Boot.writeMacOSIndexingMarkers).
+    func testLeadingDotNamesAndEmptyFiles() throws {
+        let empty = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fat-empty-\(UUID().uuidString)")
+        try Data().write(to: empty)
+        defer { try? FileManager.default.removeItem(at: empty) }
+
+        try vol.copyFromHost(source: empty, destination: "/.metadata_never_index")
+        try vol.makeDirectory("/.fseventsd")
+        try vol.copyFromHost(source: empty, destination: "/.fseventsd/no_log")
+
+        let reopened = try FAT32Volume(imageURL: imageURL)
+        XCTAssertTrue(try reopened.exists("/.metadata_never_index"))
+        XCTAssertTrue(try reopened.exists("/.fseventsd/no_log"))
+        let names = try reopened.listDirectory("/").map(\.name)
+        XCTAssertTrue(names.contains(".metadata_never_index"), "\(names)")
+        XCTAssertTrue(names.contains(".fseventsd"), "\(names)")
+
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fat-out-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: out) }
+        try reopened.copyToHost(source: "/.fseventsd/no_log", destination: out)
+        XCTAssertEqual(try Data(contentsOf: out).count, 0)
+    }
+
     // MARK: - mkdir
 
     func testMakeDirectory() throws {
@@ -150,6 +179,33 @@ final class FAT32VolumeTests: XCTestCase {
 
         try vol.delete("/bye.txt")
         XCTAssertFalse(try vol.exists("/bye.txt"))
+    }
+
+    /// delete() used to drop the directory entry but keep the clusters marked
+    /// in use — every deleted file's space was gone for good.
+    func testDeleteFreesTheClusters() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("big-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try Data(repeating: 0xA5, count: 3000).write(to: tmp)
+        let before = try vol.freeClusterCount()
+        try vol.copyFromHost(source: tmp, destination: "/big.bin")
+        XCTAssertLessThan(try vol.freeClusterCount(), before)
+        try vol.delete("/big.bin")
+        XCTAssertEqual(try vol.freeClusterCount(), before, "deleting a file must give its clusters back")
+    }
+
+    func testDeleteRefusesANonEmptyDirectory() throws {
+        try vol.makeDirectory("/Keep")
+        let tmp = tmpFile(content: "x")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try vol.copyFromHost(source: tmp, destination: "/Keep/x.txt")
+        XCTAssertThrowsError(try vol.delete("/Keep"))
+        XCTAssertTrue(try vol.exists("/Keep/x.txt"), "the subtree must survive a refused delete")
+        try vol.delete("/Keep/x.txt")
+        let before = try vol.freeClusterCount()
+        try vol.delete("/Keep")
+        XCTAssertFalse(try vol.exists("/Keep"))
+        XCTAssertGreaterThan(try vol.freeClusterCount(), before, "an empty directory's cluster is freed too")
     }
 
     func testDeleteNonExistentIsNoop() throws {

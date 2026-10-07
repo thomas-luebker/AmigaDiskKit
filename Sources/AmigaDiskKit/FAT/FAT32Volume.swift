@@ -107,13 +107,40 @@ public final class FAT32Volume {
     }
 
     /// Delete a file or empty directory at `path` (no-op if not found).
+    ///
+    /// Frees the entry's cluster chain. It used to only mark the directory
+    /// entry deleted (removeEntry does not free clusters), so every deleted
+    /// file's space was lost for good — found 2026-10-02 while building the
+    /// in-place Emu68 updater, which deletes kernels and backups on EMU68BOOT.
+    /// A non-empty directory is refused rather than orphaning its subtree.
     public func delete(_ path: String) throws {
         let components = normalize(path)
         guard !components.isEmpty else { return }
         let parentComponents = Array(components.dropLast())
         let name = components.last!
         let parentCluster = try resolveDirectoryCluster(pathComponents: parentComponents)
+        guard let entry = try readDirectory(cluster: parentCluster)
+            .first(where: { $0.name.lowercased() == name.lowercased() }) else { return }
+        if entry.isDirectory {
+            let children = try readDirectory(cluster: entry.firstCluster).filter { !$0.isDot }
+            guard children.isEmpty else {
+                throw AmigaDiskError.unsupportedOperation(
+                    "cannot delete '\(components.joined(separator: "/"))': directory not empty")
+            }
+        }
+        if entry.firstCluster >= 2 {
+            try fat.freeChain(startingAt: entry.firstCluster)
+        }
         try removeEntry(name: name, from: parentCluster)
+    }
+
+    /// Number of free clusters on the volume (scans the FAT).
+    public func freeClusterCount() throws -> Int {
+        var free = 0
+        for c: UInt32 in 2 ..< (2 &+ fat.bpb.clusterCount) where try fat.readEntry(c) == 0 {
+            free += 1
+        }
+        return free
     }
 
     /// Rename an entry in place within its own directory. `newName` is a leaf

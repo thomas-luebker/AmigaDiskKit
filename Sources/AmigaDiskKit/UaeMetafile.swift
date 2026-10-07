@@ -111,11 +111,18 @@ public extension AmigaVolumeOperations {
     /// hst-imager's behaviour and keep the extracted tree clean — the copy side
     /// falls back to its POSIX-derived default for files without a sidecar.
     func writeUaeSidecars(amigaPath: String, hostURL: URL) throws {
+        var names = HostNameMerge()
+        try writeUaeSidecars(amigaPath: amigaPath, hostURL: hostURL, names: &names)
+    }
+
+    private func writeUaeSidecars(amigaPath: String, hostURL: URL,
+                                  names: inout HostNameMerge) throws {
         for entry in try listEntries(path: amigaPath) {
             let childAmiga = amigaPath.isEmpty ? entry.name : "\(amigaPath)/\(entry.name)"
-            let childHost = hostURL.appendingPathComponent(entry.name)
+            // the same name the extractor resolved (DEVS -> existing Devs)
+            let childHost = names.child(of: hostURL, named: entry.name)
             if entry.isDirectory {
-                try writeUaeSidecars(amigaPath: childAmiga, hostURL: childHost)
+                try writeUaeSidecars(amigaPath: childAmiga, hostURL: childHost, names: &names)
             } else if entry.protection != 0 {
                 let meta = UaeMetafile(protection: entry.protection,
                                        date: entry.modified, comment: entry.comment)

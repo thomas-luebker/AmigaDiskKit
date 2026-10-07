@@ -479,6 +479,12 @@ public final class PFS3Volume {
     }
 
     public func extractToHost(amigaPath: String, hostURL: URL) throws {
+        var names = HostNameMerge()
+        try extractToHost(amigaPath: amigaPath, hostURL: hostURL, names: &names)
+    }
+
+    private func extractToHost(amigaPath: String, hostURL: URL,
+                               names: inout HostNameMerge) throws {
         let comps = components(of: amigaPath)
         if let parentName = comps.last,
            let found = try? searchInDir(try resolveDirAnode(comps.dropLast().joined(separator: "/")),
@@ -493,7 +499,10 @@ public final class PFS3Volume {
         try FileManager.default.createDirectory(at: hostURL, withIntermediateDirectories: true)
         for entry in try listDirectory(path: amigaPath) {
             let childAmiga = comps.isEmpty ? entry.name : "\(comps.joined(separator: "/"))/\(entry.name)"
-            try extractToHost(amigaPath: childAmiga, hostURL: hostURL.appendingPathComponent(entry.name))
+            // merge into an existing case-insensitive match (DEVS -> Devs)
+            try extractToHost(amigaPath: childAmiga,
+                              hostURL: names.child(of: hostURL, named: entry.name),
+                              names: &names)
         }
     }
 

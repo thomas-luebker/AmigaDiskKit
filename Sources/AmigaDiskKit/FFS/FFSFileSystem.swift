@@ -911,13 +911,20 @@ public final class FFSFileSystem {
     // MARK: - Extract helpers
 
     private func extractDirBlock(_ dirFSBlock: UInt32, to hostURL: URL) throws {
+        var names = HostNameMerge()
+        try extractDirBlock(dirFSBlock, to: hostURL, names: &names)
+    }
+
+    private func extractDirBlock(_ dirFSBlock: UInt32, to hostURL: URL,
+                                 names: inout HostNameMerge) throws {
         let entries = try listDirBlock(dirFSBlock)
         let fm = FileManager.default
         for entry in entries {
-            let dest = hostURL.appendingPathComponent(entry.name)
+            // merge into an existing case-insensitive match (DEVS -> Devs)
+            let dest = names.child(of: hostURL, named: entry.name)
             if entry.isDirectory {
                 try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-                try extractDirBlock(entry.fsBlock, to: dest)
+                try extractDirBlock(entry.fsBlock, to: dest, names: &names)
             } else {
                 let fileData = try assembleFileData(entry: entry)
                 try fileData.write(to: dest)
